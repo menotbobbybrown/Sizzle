@@ -3,6 +3,8 @@ import { type NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { env } from "@/env";
 import { db } from "@/lib/db";
+import { generateToken, hashToken, DEFAULT_TOKEN_CONFIG } from "@/lib/tokens";
+import { sendEmail } from "@/lib/email";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -75,6 +77,92 @@ export async function POST(req: NextRequest) {
               unitPrice: product.price,
             },
           });
+
+          // Generate access token for digital fulfillment
+          const rawToken = generateToken();
+          const tokenHash = hashToken(rawToken);
+
+          await db.accessToken.create({
+            data: {
+              tokenHash,
+              orderId: order.id,
+              productId,
+              maxUses: DEFAULT_TOKEN_CONFIG.maxUses,
+              expiresAt: new Date(
+                Date.now() + DEFAULT_TOKEN_CONFIG.expiresInHours * 60 * 60 * 1000
+              ),
+            },
+          });
+
+          // Create enrollment for course products
+          if (product.type === "COURSE") {
+            await db.enrollment.upsert({
+              where: {
+                userId_productId: {
+                  userId: session.metadata.userId ?? "anonymous",
+                  productId,
+                },
+              },
+              update: { status: "ACTIVE" },
+              create: {
+                userId: session.metadata.userId ?? "anonymous",
+                productId,
+                status: "ACTIVE",
+              },
+            });
+          }
+
+          // Send post-purchase receipt email
+          const accessUrl = `${env.APP_URL}/api/access/${rawToken}`;
+          const workspace = await db.workspace.findUnique({ where: { id: workspaceId } });
+
+          await sendEmail({
+            to: customerEmail ?? session.customer_details?.email ?? "",
+            subject: `Your purchase of ${product.name}`,
+            html: `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 0; background-color: #f4f4f5;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 600px; margin: 0 auto; padding: 24px;">
+    <tr>
+      <td style="text-align: center; padding: 24px 0;">
+        <h1 style="font-size: 24px; margin: 0;">Thank you for your purchase!</h1>
+        <p style="color: #71717a; margin-top: 8px;">Your order has been confirmed.</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+        <h2 style="font-size: 18px; margin: 0 0 16px;">${product.name}</h2>
+        <p style="color: #71717a;">Amount paid: ${order.amount}</p>
+        <a href="${accessUrl}" style="display: inline-block; margin-top: 16px; background: #000; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 500;">
+          Access your purchase
+        </a>
+      </td>
+    </tr>
+    <tr>
+      <td style="text-align: center; padding-top: 24px; color: #71717a; font-size: 12px;">
+        <p>Powered by Sizzle${workspace ? ` &mdash; ${workspace.name}` : ""}</p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`,
+            tags: [
+              { name: "orderId", value: order.id },
+              { name: "type", value: "receipt" },
+            ],
+          });
+
+          // Log email send
+          await db.emailLog.create({
+            data: {
+              orderId: order.id,
+              to: customerEmail ?? "",
+              subject: `Your purchase of ${product.name}`,
+              template: "receipt",
+              status: "SENT",
+            },
+          });
         }
       }
 
@@ -89,10 +177,6 @@ export async function POST(req: NextRequest) {
           status: "SUCCEEDED",
         },
       });
-
-      // TODO: Send post-purchase email
-      // TODO: Create access token for digital fulfillment
-      // TODO: Create enrollment for course products
     }
 
     if (event.type === "checkout.session.expired") {

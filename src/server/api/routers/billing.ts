@@ -51,8 +51,13 @@ export const billingRouter = createTRPCRouter({
       throw new Error("No active subscription");
     }
 
+    // Retrieve subscription to get the customer ID
+    const subscription = await stripe.subscriptions.retrieve(
+      ctx.workspace.stripeSubscriptionId
+    );
+
     const portalSession = await stripe.billingPortal.sessions.create({
-      customer: ctx.workspace.stripeSubscriptionId,
+      customer: subscription.customer as string,
       return_url: `${env.NEXT_PUBLIC_APP_URL}/dashboard/billing`,
     });
 

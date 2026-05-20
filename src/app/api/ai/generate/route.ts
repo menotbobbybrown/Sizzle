@@ -28,10 +28,16 @@ export async function POST(req: Request) {
       );
     }
 
+    // Resolve workspace from user's first membership
+    const membership = await db.workspaceMember.findFirst({
+      where: { userId: session.user.id },
+      include: { workspace: true },
+    });
+
     // Log the generation for audit and quota tracking
     await db.aiGenerationLog.create({
       data: {
-        workspaceId: "unknown", // Would be resolved from session
+        workspaceId: membership?.workspace.id ?? "unknown",
         userId: session.user.id,
         prompt: context,
         result: result.content,

@@ -38,8 +38,9 @@ export async function POST(req: Request) {
         status: "ACTIVE",
         ...(campaign.segmentId
           ? {
-              // Apply segment filtering logic here
-              // This is simplified - real implementation would use the rules JSON
+              // Apply segment filtering via metadata or purchases
+              // This simplified version fetches all active subscribers;
+              // a production implementation would evaluate segment.rules
             }
           : {}),
       },
