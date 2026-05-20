@@ -10,18 +10,30 @@ import { getWorkspaceEntitlements } from "@/lib/entitlements";
 export const createTRPCContext = async (opts: { req: NextRequest }) => {
   const session = await auth();
 
-  // Resolve workspace from header or handle
-  const workspaceHandle = opts.req.headers.get("x-workspace-handle");
-
+  // Resolve workspace from header or first workspace for logged-in users
   let workspace = null;
   let entitlements = null;
+
+  // Try to get workspace from header (for public storefront routes)
+  const workspaceHandle = opts.req.headers.get("x-workspace-handle");
   if (workspaceHandle) {
     workspace = await db.workspace.findUnique({
       where: { handle: workspaceHandle },
     });
-    if (workspace) {
-      entitlements = getWorkspaceEntitlements(workspace);
-    }
+  }
+
+  // If no workspace from header, get the user's first workspace
+  if (!workspace && session?.user?.id) {
+    const membership = await db.workspaceMember.findFirst({
+      where: { userId: session.user.id },
+      include: { workspace: true },
+      orderBy: { createdAt: "asc" },
+    });
+    workspace = membership?.workspace ?? null;
+  }
+
+  if (workspace) {
+    entitlements = getWorkspaceEntitlements(workspace);
   }
 
   return {
@@ -61,11 +73,15 @@ export const protectedProcedure = t.procedure.use(({ ctx, next }) => {
   });
 });
 
+/**
+ * Creator procedure - requires user to be owner/admin of workspace
+ * Workspace must be resolved in context (from header or first workspace)
+ */
 export const creatorProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   if (!ctx.workspace) {
     throw new TRPCError({
       code: "NOT_FOUND",
-      message: "Workspace not found or not provided",
+      message: "Workspace not found. Please provide a workspace handle.",
     });
   }
 
@@ -82,13 +98,24 @@ export const creatorProcedure = protectedProcedure.use(async ({ ctx, next }) => 
     !membership ||
     (membership.role !== "OWNER" && membership.role !== "ADMIN")
   ) {
-    throw new TRPCError({ code: "FORBIDDEN" });
+    throw new TRPCError({ code: "FORBIDDEN", message: "You don't have access to this workspace" });
   }
 
   return next({
     ctx: {
+      ...ctx,
       workspace: ctx.workspace,
       membership,
     },
   });
+});
+
+/**
+ * Admin procedure - requires admin role
+ */
+export const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.session.user.role !== "ADMIN") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
+  }
+  return next({ ctx });
 });

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { hashToken } from "@/lib/tokens";
 
@@ -6,7 +6,7 @@ type Props = {
   params: Promise<{ token: string }>;
 };
 
-export async function GET(_req: Request, { params }: Props) {
+export async function GET(req: NextRequest, { params }: Props) {
   const { token } = await params;
   const tokenHash = hashToken(token);
 
@@ -16,40 +16,46 @@ export async function GET(_req: Request, { params }: Props) {
   });
 
   if (!accessToken) {
-    return NextResponse.json({ error: "Token not found" }, { status: 404 });
+    return new NextResponse("Invalid download token", { status: 404 });
   }
 
-  // Check if revoked
   if (accessToken.revokedAt) {
-    return NextResponse.json({ error: "Token has been revoked" }, { status: 403 });
+    return new NextResponse("Download link has been revoked", { status: 403 });
   }
 
-  // Check if expired
   if (accessToken.expiresAt && accessToken.expiresAt < new Date()) {
-    return NextResponse.json({ error: "Token has expired" }, { status: 410 });
+    return new NextResponse("Download link has expired", { status: 410 });
   }
 
-  // Check usage limit
   if (accessToken.useCount >= accessToken.maxUses) {
-    return NextResponse.json({ error: "Token usage limit exceeded" }, { status: 429 });
+    return new NextResponse("Download limit reached", { status: 403 });
   }
 
-  // Increment usage
+  // Increment use count
   await db.accessToken.update({
-    where: { id: accessToken.id },
+    where: { tokenHash },
     data: {
       useCount: { increment: 1 },
       lastUsedAt: new Date(),
     },
   });
 
-  // Return the product or resource the token grants access to
+  // TODO: Stream actual file from R2/S3
+  // For now, return a JSON response indicating download was tracked
+  // In production, this would stream the actual file:
+  // const file = await getFileFromR2(accessToken.product.fileKey);
+  // return new Response(file.body, {
+  //   headers: {
+  //     'Content-Type': file.contentType,
+  //     'Content-Disposition': `attachment; filename="${file.filename}"`,
+  //   },
+  // });
+
   return NextResponse.json({
-    product: {
-      id: accessToken.product.id,
-      name: accessToken.product.name,
-      type: accessToken.product.type,
-    },
-    orderId: accessToken.orderId,
+    success: true,
+    message: "Download tracked",
+    productId: accessToken.productId,
+    useCount: accessToken.useCount + 1,
+    remainingUses: accessToken.maxUses - (accessToken.useCount + 1),
   });
 }
