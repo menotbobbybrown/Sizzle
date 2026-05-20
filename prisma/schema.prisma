@@ -9,18 +9,18 @@ datasource db {
 // ─── NextAuth Models ────────────────────────────────────────────────────────
 
 model Account {
-  id                 String  @id @default(cuid())
-  userId             String
-  type               String
-  provider           String
-  providerAccountId  String
-  refresh_token      String?  @db.Text
-  access_token       String?  @db.Text
-  expires_at         Int?
-  token_type         String?
-  scope              String?
-  id_token           String?  @db.Text
-  session_state      String?
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -43,21 +43,23 @@ model User {
   image         String?
   role          UserRole  @default(USER)
 
-  accounts      Account[]
-  sessions      Session[]
+  accounts Account[]
+  sessions Session[]
 
   // Creator workspace membership
-  workspaces    WorkspaceMember[]
+  workspaces WorkspaceMember[]
 
   // Customer relations
   orders        Order[]
   enrollments   Enrollment[]
+  reviews       Review[]
+  notifications Notification[]
 
   // Onboarding state
-  onboarding    OnboardingState?
+  onboarding OnboardingState?
 
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 enum UserRole {
@@ -76,42 +78,44 @@ model VerificationToken {
 // ─── Workspace (renamed from Tenant) ─────────────────────────────────────────
 
 model Workspace {
-  id          String   @id @default(cuid())
-  name        String
-  handle      String   @unique // The @handle for the storefront URL
-  domain      String?  @unique
-  logoUrl     String?
-  bannerUrl   String?
-  bio         String?  @db.Text
+  id        String  @id @default(cuid())
+  name      String
+  handle    String  @unique // The @handle for the storefront URL
+  domain    String? @unique
+  logoUrl   String?
+  bannerUrl String?
+  bio       String? @db.Text
 
   // Stripe Connect
-  stripeAccountId String? @unique
+  stripeAccountId     String? @unique
+  stripeAccountStatus String? @default("disconnected")
 
   // SaaS subscription (flat $5/mo)
-  plan             WorkspacePlan @default(TRIALING)
-  stripeSubscriptionId String? @unique
-  trialEndsAt      DateTime?
+  plan                 WorkspacePlan @default(TRIALING)
+  stripeSubscriptionId String?       @unique
+  trialEndsAt          DateTime?
 
-  members        WorkspaceMember[]
-  products       Product[]
-  orders         Order[]
-  storefront     StorefrontTheme?
-  subscribers    Subscriber[]
-  campaigns      Campaign[]
+  members           WorkspaceMember[]
+  products          Product[]
+  orders            Order[]
+  storefront        StorefrontTheme?
+  subscribers       Subscriber[]
+  campaigns         Campaign[]
   handleReservation HandleReservation? @relation("HandleToWorkspace")
 
   // Analytics aggregates
-  analytics      AnalyticsDaily[]
+  analytics AnalyticsDaily[]
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  discountCodes DiscountCode[]
 }
 
 model WorkspaceMember {
-  id        String          @id @default(cuid())
+  id          String        @id @default(cuid())
   workspaceId String
-  userId    String
-  role      WorkspaceRole   @default(MEMBER)
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -136,24 +140,24 @@ enum WorkspacePlan {
 // ─── Onboarding ──────────────────────────────────────────────────────────────
 
 model OnboardingState {
-  id             String            @id @default(cuid())
-  userId         String            @unique
-  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  step           OnboardingStep    @default(ACCOUNT)
-  completedAt    DateTime?
+  step        OnboardingStep @default(ACCOUNT)
+  completedAt DateTime?
 
   // Step 1: Account
-  accountSkipped Boolean           @default(false)
+  accountSkipped  Boolean @default(false)
   // Step 2: Handle
-  handleSkipped  Boolean           @default(false)
+  handleSkipped   Boolean @default(false)
   // Step 3: Payout (Stripe Connect)
-  payoutSkipped  Boolean           @default(false)
+  payoutSkipped   Boolean @default(false)
   // Step 4: Branding
-  brandingSkipped Boolean          @default(false)
+  brandingSkipped Boolean @default(false)
 
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 enum OnboardingStep {
@@ -167,41 +171,43 @@ enum OnboardingStep {
 // ─── Handle Reservation ──────────────────────────────────────────────────────
 
 model HandleReservation {
-  id        String   @id @default(cuid())
-  handle    String   @unique
-  workspace Workspace? @relation("HandleToWorkspace", fields: [workspaceId], references: [id])
-  workspaceId String? @unique
-  claimedAt DateTime @default(now())
+  id          String     @id @default(cuid())
+  handle      String     @unique
+  userId      String?
+  workspace   Workspace? @relation("HandleToWorkspace", fields: [workspaceId], references: [id])
+  workspaceId String?    @unique
+  claimedAt   DateTime   @default(now())
 
   @@index([handle])
+  @@index([userId])
 }
 
 // ─── Storefront Theme ────────────────────────────────────────────────────────
 
 model StorefrontTheme {
-  id         String   @id @default(cuid())
-  workspaceId String  @unique
-  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  id          String    @id @default(cuid())
+  workspaceId String    @unique
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Theme config stored as JSON
-  config     Json     @default("{}")
-  published  Boolean  @default(false)
+  config    Json    @default("{}")
+  published Boolean @default(false)
 
-  versions   ThemeVersion[]
+  versions ThemeVersion[]
 
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model ThemeVersion {
-  id         String   @id @default(cuid())
-  themeId    String
-  theme      StorefrontTheme @relation(fields: [themeId], references: [id], onDelete: Cascade)
-  config     Json
-  version    Int
-  published  Boolean  @default(false)
+  id        String          @id @default(cuid())
+  themeId   String
+  theme     StorefrontTheme @relation(fields: [themeId], references: [id], onDelete: Cascade)
+  config    Json
+  version   Int
+  published Boolean         @default(false)
 
-  createdAt  DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([themeId, version])
   @@index([themeId, published])
@@ -210,29 +216,30 @@ model ThemeVersion {
 // ─── Commerce Domain ─────────────────────────────────────────────────────────
 
 model Product {
-  id          String      @id @default(cuid())
+  id          String        @id @default(cuid())
   workspaceId String
   name        String
   slug        String
-  description String?     @db.Text
-  price       Decimal     @db.Decimal(10, 2)
-  currency    String      @default("USD")
+  description String?       @db.Text
+  price       Decimal       @db.Decimal(10, 2)
+  currency    String        @default("USD")
   type        ProductType
   status      ProductStatus @default(DRAFT)
   imageUrl    String?
 
-  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Sub-type relations
-  course      Course?
+  course Course?
 
-  enrollments Enrollment[]
-  orderItems  OrderItem[]
-  prices      Price[]
+  enrollments  Enrollment[]
+  orderItems   OrderItem[]
+  prices       Price[]
   accessTokens AccessToken[]
 
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  reviews   Review[]
 
   @@unique([workspaceId, slug])
 }
@@ -249,13 +256,42 @@ enum ProductStatus {
   ARCHIVED
 }
 
+// ─── Discount Codes ────────────────────────────────────────────────────────────
+
+model DiscountCode {
+  id          String       @id @default(cuid())
+  workspaceId String
+  code        String       @unique
+  type        DiscountType @default(PERCENTAGE)
+  value       Decimal      @db.Decimal(10, 2)
+  maxUses     Int?
+  usedCount   Int          @default(0)
+  startsAt    DateTime?
+  expiresAt   DateTime?
+  isActive    Boolean      @default(true)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  orders    Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId, isActive])
+  @@index([code])
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
 model Price {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   productId String
-  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  amount    Decimal  @db.Decimal(10, 2)
-  currency  String   @default("USD")
-  label     String?  // e.g. "Early Bird", "Full Price"
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  amount    Decimal @db.Decimal(10, 2)
+  currency  String  @default("USD")
+  label     String? // e.g. "Early Bird", "Full Price"
 
   @@index([productId])
 }
@@ -263,40 +299,40 @@ model Price {
 // ─── Course Builder ──────────────────────────────────────────────────────────
 
 model Course {
-  id        String   @id @default(cuid())
-  productId String   @unique
-  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  id        String  @id @default(cuid())
+  productId String  @unique
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  modules   CourseModule[]
+  modules CourseModule[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
 model CourseModule {
-  id        String   @id @default(cuid())
-  courseId  String
-  title     String
-  order     Int
+  id       String @id @default(cuid())
+  courseId String
+  title    String
+  order    Int
 
-  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  lessons   Lesson[]
+  course  Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessons Lesson[]
 
   @@index([courseId, order])
 }
 
 model Lesson {
-  id        String   @id @default(cuid())
-  moduleId  String
-  title     String
-  content   String?  @db.Text
-  videoUrl  String?
-  order     Int
+  id         String     @id @default(cuid())
+  moduleId   String
+  title      String
+  content    String?    @db.Text
+  videoUrl   String?
+  order      Int
   lessonType LessonType @default(TEXT)
 
-  module    CourseModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
-  progress  LessonProgress[]
-  muxAsset  MuxAsset?
+  module   CourseModule     @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  progress LessonProgress[]
+  muxAsset MuxAsset?
 
   @@index([moduleId, order])
 }
@@ -309,15 +345,15 @@ enum LessonType {
 }
 
 model MuxAsset {
-  id           String         @id @default(cuid())
-  lessonId     String         @unique
-  lesson       Lesson         @relation(fields: [lessonId], references: [id], onDelete: Cascade)
-  muxAssetId   String
+  id            String         @id @default(cuid())
+  lessonId      String         @unique
+  lesson        Lesson         @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  muxAssetId    String
   muxPlaybackId String?
-  status       MuxAssetStatus @default(PREPARING)
-  duration     Int?
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  status        MuxAssetStatus @default(PREPARING)
+  duration      Int?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 enum MuxAssetStatus {
@@ -330,41 +366,44 @@ enum MuxAssetStatus {
 // ─── Orders & Checkout ───────────────────────────────────────────────────────
 
 model Order {
-  id               String      @id @default(cuid())
-  workspaceId      String
-  userId           String
-  customerEmail    String?
-  customerName     String?
-  amount           Decimal     @db.Decimal(10, 2)
-  currency         String      @default("USD")
-  status           OrderStatus @default(PENDING)
-  stripeSessionId  String?     @unique
+  id                    String        @id @default(cuid())
+  workspaceId           String
+  userId                String
+  customerEmail         String?
+  customerName          String?
+  amount                Decimal       @db.Decimal(10, 2)
+  currency              String        @default("USD")
+  status                OrderStatus   @default(PENDING)
+  stripeSessionId       String?       @unique
   stripePaymentIntentId String?
+  discountCodeId        String?
+  discountCode          DiscountCode? @relation(fields: [discountCodeId], references: [id])
 
-  workspace        Workspace   @relation(fields: [workspaceId], references: [id])
-  user             User        @relation(fields: [userId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  user      User?     @relation(fields: [userId], references: [id])
 
-  items            OrderItem[]
-  payments         Payment[]
-  accessTokens     AccessToken[]
-  emails           EmailLog[]
+  items        OrderItem[]
+  payments     Payment[]
+  accessTokens AccessToken[]
+  emails       EmailLog[]
 
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([workspaceId, status])
   @@index([userId])
+  @@index([discountCodeId])
 }
 
 model OrderItem {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   orderId   String
   productId String
-  quantity  Int      @default(1)
-  unitPrice Decimal  @db.Decimal(10, 2)
+  quantity  Int     @default(1)
+  unitPrice Decimal @db.Decimal(10, 2)
 
-  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product   Product  @relation(fields: [productId], references: [id])
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
 
   @@index([orderId])
 }
@@ -378,19 +417,19 @@ enum OrderStatus {
 }
 
 model Payment {
-  id                  String           @id @default(cuid())
-  orderId             String
-  order               Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  stripePaymentIntentId String?        @unique
-  stripeSessionId     String?
-  amount              Decimal          @db.Decimal(10, 2)
-  currency            String           @default("USD")
-  status              PaymentStatus    @default(PENDING)
-  applicationFee      Decimal?         @db.Decimal(10, 2)
-  transferId          String?
+  id                    String        @id @default(cuid())
+  orderId               String
+  order                 Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  stripePaymentIntentId String?       @unique
+  stripeSessionId       String?
+  amount                Decimal       @db.Decimal(10, 2)
+  currency              String        @default("USD")
+  status                PaymentStatus @default(PENDING)
+  applicationFee        Decimal?      @db.Decimal(10, 2)
+  transferId            String?
 
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([orderId])
   @@index([stripePaymentIntentId])
@@ -406,13 +445,13 @@ enum PaymentStatus {
 // ─── Webhook Events (idempotency) ────────────────────────────────────────────
 
 model WebhookEvent {
-  id              String   @id @default(cuid())
-  stripeEventId   String   @unique
-  type            String
-  status          WebhookEventStatus @default(PENDING)
-  processedAt     DateTime?
+  id            String             @id @default(cuid())
+  stripeEventId String             @unique
+  type          String
+  status        WebhookEventStatus @default(PENDING)
+  processedAt   DateTime?
 
-  createdAt       DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@index([stripeEventId])
   @@index([status])
@@ -427,19 +466,19 @@ enum WebhookEventStatus {
 // ─── Access Tokens (fulfillment) ─────────────────────────────────────────────
 
 model AccessToken {
-  id           String         @id @default(cuid())
-  tokenHash    String         @unique
-  orderId      String
-  order        Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId    String
-  product      Product        @relation(fields: [productId], references: [id])
-  maxUses      Int            @default(1)
-  useCount     Int            @default(0)
-  expiresAt    DateTime?
-  revokedAt    DateTime?
-  lastUsedAt   DateTime?
+  id         String    @id @default(cuid())
+  tokenHash  String    @unique
+  orderId    String
+  order      Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product   @relation(fields: [productId], references: [id])
+  maxUses    Int       @default(1)
+  useCount   Int       @default(0)
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
 
-  createdAt    DateTime       @default(now())
+  createdAt DateTime @default(now())
 
   @@index([tokenHash])
   @@index([orderId])
@@ -448,18 +487,18 @@ model AccessToken {
 // ─── Post-Purchase Email System ──────────────────────────────────────────────
 
 model EmailLog {
-  id        String       @id @default(cuid())
+  id        String      @id @default(cuid())
   orderId   String?
-  order     Order?       @relation(fields: [orderId], references: [id])
+  order     Order?      @relation(fields: [orderId], references: [id])
   to        String
   subject   String
   template  String
-  status    EmailStatus  @default(SENT)
+  status    EmailStatus @default(SENT)
   error     String?
   openedAt  DateTime?
   clickedAt DateTime?
 
-  createdAt DateTime     @default(now())
+  createdAt DateTime @default(now())
 
   @@index([orderId])
   @@index([status])
@@ -478,18 +517,18 @@ enum EmailStatus {
 // ─── Enrollment ──────────────────────────────────────────────────────────────
 
 model Enrollment {
-  id          String            @id @default(cuid())
-  userId      String
-  productId   String
-  status      EnrollmentStatus @default(ACTIVE)
+  id        String           @id @default(cuid())
+  userId    String
+  productId String
+  status    EnrollmentStatus @default(ACTIVE)
 
-  user        User              @relation(fields: [userId], references: [id])
-  product     Product           @relation(fields: [productId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
 
-  progress    LessonProgress[]
+  progress LessonProgress[]
 
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([userId, productId])
 }
@@ -501,13 +540,13 @@ enum EnrollmentStatus {
 }
 
 model LessonProgress {
-  id           String     @id @default(cuid())
+  id           String  @id @default(cuid())
   enrollmentId String
   lessonId     String
-  completed    Boolean    @default(false)
+  completed    Boolean @default(false)
 
-  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
-  lesson       Lesson     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  lesson     Lesson     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
 
   @@unique([enrollmentId, lessonId])
 }
@@ -515,35 +554,35 @@ model LessonProgress {
 // ─── Analytics ───────────────────────────────────────────────────────────────
 
 model AnalyticsDaily {
-  id             String   @id @default(cuid())
-  workspaceId    String
-  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  date           DateTime
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  date        DateTime
 
   // Revenue
-  gmv            Decimal  @default(0) @db.Decimal(12, 2)
-  feeAmount      Decimal  @default(0) @db.Decimal(12, 2)
-  netRevenue     Decimal  @default(0) @db.Decimal(12, 2)
+  gmv        Decimal @default(0) @db.Decimal(12, 2)
+  feeAmount  Decimal @default(0) @db.Decimal(12, 2)
+  netRevenue Decimal @default(0) @db.Decimal(12, 2)
 
   // Orders
-  orderCount     Int      @default(0)
-  refundCount    Int      @default(0)
-  conversionRate Decimal  @default(0) @db.Decimal(5, 2)
+  orderCount     Int     @default(0)
+  refundCount    Int     @default(0)
+  conversionRate Decimal @default(0) @db.Decimal(5, 2)
 
   // Visitors
-  visitorCount   Int      @default(0)
-  pageViewCount  Int      @default(0)
+  visitorCount  Int @default(0)
+  pageViewCount Int @default(0)
 
   // Top products (JSON array of {productId, name, revenue, orders})
-  topProducts    Json     @default("[]")
+  topProducts Json @default("[]")
 
   // Email
-  emailSent      Int      @default(0)
-  emailOpened    Int      @default(0)
-  emailClicked   Int      @default(0)
+  emailSent    Int @default(0)
+  emailOpened  Int @default(0)
+  emailClicked Int @default(0)
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([workspaceId, date])
   @@index([workspaceId, date])
@@ -552,18 +591,18 @@ model AnalyticsDaily {
 // ─── AI Tools ────────────────────────────────────────────────────────────────
 
 model AiGenerationLog {
-  id          String   @id @default(cuid())
+  id          String @id @default(cuid())
   workspaceId String
   userId      String
-  prompt      String   @db.Text
-  result      String   @db.Text
-  model       String   @default("claude-sonnet-4-20250514")
-  tokensIn    Int      @default(0)
-  tokensOut   Int      @default(0)
-  durationMs  Int      @default(0)
-  feature     String   // "title", "description", "email", "lessonOutline", etc.
+  prompt      String @db.Text
+  result      String @db.Text
+  model       String @default("claude-sonnet-4-20250514")
+  tokensIn    Int    @default(0)
+  tokensOut   Int    @default(0)
+  durationMs  Int    @default(0)
+  feature     String // "title", "description", "email", "lessonOutline", etc.
 
-  createdAt   DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@index([workspaceId, createdAt])
   @@index([userId])
@@ -572,23 +611,23 @@ model AiGenerationLog {
 // ─── Email Marketing ─────────────────────────────────────────────────────────
 
 model Subscriber {
-  id           String          @id @default(cuid())
-  workspaceId  String
-  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  email        String
-  name         String?
-  status       SubscriberStatus @default(ACTIVE)
-  metadata     Json            @default("{}")
+  id          String           @id @default(cuid())
+  workspaceId String
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  email       String
+  name        String?
+  status      SubscriberStatus @default(ACTIVE)
+  metadata    Json             @default("{}")
 
   // Unsubscribe management
-  unsubscribedAt DateTime?
+  unsubscribedAt    DateTime?
   unsubscribeReason String?
 
-  campaigns    CampaignSend[]
-  events       EmailEvent[]
+  campaigns CampaignSend[]
+  events    EmailEvent[]
 
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([workspaceId, email])
   @@index([workspaceId, status])
@@ -602,43 +641,43 @@ enum SubscriberStatus {
 }
 
 model Segment {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   workspaceId String
   name        String
   description String?
-  rules       Json     @default("{}") // Segment definition (e.g., {"purchased": true, "tag": "vip"})
+  rules       Json    @default("{}") // Segment definition (e.g., {"purchased": true, "tag": "vip"})
 
-  campaigns   Campaign[]
+  campaigns Campaign[]
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([workspaceId])
 }
 
 model Campaign {
-  id          String        @id @default(cuid())
+  id          String         @id @default(cuid())
   workspaceId String
-  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   name        String
   subject     String
   previewText String?
   fromName    String?
   replyTo     String?
-  htmlContent String        @db.Text
-  plainText   String?       @db.Text
+  htmlContent String         @db.Text
+  plainText   String?        @db.Text
   status      CampaignStatus @default(DRAFT)
   segmentId   String?
-  segment     Segment?      @relation(fields: [segmentId], references: [id])
+  segment     Segment?       @relation(fields: [segmentId], references: [id])
 
   scheduledAt DateTime?
   sentAt      DateTime?
 
-  sends       CampaignSend[]
-  events      EmailEvent[]
+  sends  CampaignSend[]
+  events EmailEvent[]
 
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([workspaceId, status])
 }
@@ -652,16 +691,16 @@ enum CampaignStatus {
 }
 
 model CampaignSend {
-  id           String   @id @default(cuid())
+  id           String     @id @default(cuid())
   campaignId   String
-  campaign     Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   subscriberId String
   subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
   status       SendStatus @default(QUEUED)
   error        String?
   sentAt       DateTime?
 
-  createdAt    DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([campaignId, subscriberId])
   @@index([campaignId])
@@ -677,18 +716,18 @@ enum SendStatus {
 }
 
 model EmailEvent {
-  id           String       @id @default(cuid())
+  id           String         @id @default(cuid())
   subscriberId String
-  subscriber   Subscriber   @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+  subscriber   Subscriber     @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
   campaignId   String?
-  campaign     Campaign?    @relation(fields: [campaignId], references: [id])
+  campaign     Campaign?      @relation(fields: [campaignId], references: [id])
   type         EmailEventType
-  metadata     Json         @default("{}")
+  metadata     Json           @default("{}")
   ipAddress    String?
   userAgent    String?
   linkUrl      String?
 
-  createdAt    DateTime     @default(now())
+  createdAt DateTime @default(now())
 
   @@index([subscriberId])
   @@index([campaignId])
@@ -701,4 +740,49 @@ enum EmailEventType {
   UNSUBSCRIBED
   BOUNCED
   COMPLAINED
+}
+
+// ─── Reviews ─────────────────────────────────────────────────────────────────
+
+model Review {
+  id        String       @id @default(cuid())
+  productId String
+  userId    String
+  rating    Int // 1-5 stars
+  content   String       @db.Text
+  status    ReviewStatus @default(PENDING)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId, status])
+  @@index([userId])
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+model Notification {
+  id      String    @id @default(cuid())
+  userId  String
+  type    String // "order_placed", "new_subscriber", "review_received", etc.
+  title   String
+  message String?   @db.Text
+  data    Json      @default("{}") // Additional context
+  readAt  DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
 }
