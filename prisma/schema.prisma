@@ -4,10 +4,10 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
-// NextAuth Models
+// ─── NextAuth Models ────────────────────────────────────────────────────────
+
 model Account {
   id                 String  @id @default(cuid())
   userId             String
@@ -42,15 +42,22 @@ model User {
   emailVerified DateTime?
   image         String?
   role          UserRole  @default(USER)
+
   accounts      Account[]
   sessions      Session[]
-  
-  // A user can be a creator of one or more tenants (workspaces)
-  tenants       TenantMember[]
-  
-  // A user can be a customer of many creators
+
+  // Creator workspace membership
+  workspaces    WorkspaceMember[]
+
+  // Customer relations
   orders        Order[]
   enrollments   Enrollment[]
+
+  // Onboarding state
+  onboarding    OnboardingState?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 }
 
 enum UserRole {
@@ -66,57 +73,59 @@ model VerificationToken {
   @@unique([identifier, token])
 }
 
-// Multi-tenancy
-model Tenant {
+// ─── Workspace (renamed from Tenant) ─────────────────────────────────────────
+
+model Workspace {
   id          String   @id @default(cuid())
   name        String
-  slug        String   @unique
+  handle      String   @unique // The @handle for the storefront URL
   domain      String?  @unique
   logoUrl     String?
   bannerUrl   String?
-  
+  bio         String?  @db.Text
+
   // Stripe Connect
   stripeAccountId String? @unique
-  
-  // SaaS Subscription (Creator's plan)
-  plan        SaaSPlan @default(FREE)
-  subscriptionStatus SubscriptionStatus @default(INACTIVE)
-  stripeSubscriptionId String? @unique
 
-  members     TenantMember[]
-  products    Product[]
-  orders      Order[]
-  
+  // SaaS subscription (flat $5/mo)
+  plan             WorkspacePlan @default(TRIALING)
+  stripeSubscriptionId String? @unique
+  trialEndsAt      DateTime?
+
+  members        WorkspaceMember[]
+  products       Product[]
+  orders         Order[]
+  storefront     StorefrontTheme?
+  subscribers    Subscriber[]
+  campaigns      Campaign[]
+  handleReservation HandleReservation? @relation("HandleToWorkspace")
+
+  // Analytics aggregates
+  analytics      AnalyticsDaily[]
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
 
-model TenantMember {
-  id        String     @id @default(cuid())
-  tenantId  String
+model WorkspaceMember {
+  id        String          @id @default(cuid())
+  workspaceId String
   userId    String
-  role      TenantRole @default(MEMBER)
-  
-  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      WorkspaceRole   @default(MEMBER)
 
-  @@unique([tenantId, userId])
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
 }
 
-enum TenantRole {
+enum WorkspaceRole {
   OWNER
   ADMIN
   MEMBER
 }
 
-enum SaaSPlan {
-  FREE
-  BASIC
-  PRO
-  ENTERPRISE
-}
-
-enum SubscriptionStatus {
+enum WorkspacePlan {
   ACTIVE
   TRIALING
   PAST_DUE
@@ -124,10 +133,85 @@ enum SubscriptionStatus {
   INACTIVE
 }
 
-// Commerce Domain
+// ─── Onboarding ──────────────────────────────────────────────────────────────
+
+model OnboardingState {
+  id             String            @id @default(cuid())
+  userId         String            @unique
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  step           OnboardingStep    @default(ACCOUNT)
+  completedAt    DateTime?
+
+  // Step 1: Account
+  accountSkipped Boolean           @default(false)
+  // Step 2: Handle
+  handleSkipped  Boolean           @default(false)
+  // Step 3: Payout (Stripe Connect)
+  payoutSkipped  Boolean           @default(false)
+  // Step 4: Branding
+  brandingSkipped Boolean          @default(false)
+
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+}
+
+enum OnboardingStep {
+  ACCOUNT
+  HANDLE
+  PAYOUT
+  BRANDING
+  COMPLETED
+}
+
+// ─── Handle Reservation ──────────────────────────────────────────────────────
+
+model HandleReservation {
+  id        String   @id @default(cuid())
+  handle    String   @unique
+  workspace Workspace? @relation("HandleToWorkspace", fields: [workspaceId], references: [id])
+  workspaceId String? @unique
+  claimedAt DateTime @default(now())
+
+  @@index([handle])
+}
+
+// ─── Storefront Theme ────────────────────────────────────────────────────────
+
+model StorefrontTheme {
+  id         String   @id @default(cuid())
+  workspaceId String  @unique
+  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // Theme config stored as JSON
+  config     Json     @default("{}")
+  published  Boolean  @default(false)
+
+  versions   ThemeVersion[]
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model ThemeVersion {
+  id         String   @id @default(cuid())
+  themeId    String
+  theme      StorefrontTheme @relation(fields: [themeId], references: [id], onDelete: Cascade)
+  config     Json
+  version    Int
+  published  Boolean  @default(false)
+
+  createdAt  DateTime @default(now())
+
+  @@unique([themeId, version])
+  @@index([themeId, published])
+}
+
+// ─── Commerce Domain ─────────────────────────────────────────────────────────
+
 model Product {
   id          String      @id @default(cuid())
-  tenantId    String
+  workspaceId String
   name        String
   slug        String
   description String?     @db.Text
@@ -136,32 +220,27 @@ model Product {
   type        ProductType
   status      ProductStatus @default(DRAFT)
   imageUrl    String?
-  
-  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
   // Sub-type relations
   course      Course?
-  coaching    Coaching?
-  membership  Membership?
-  digitalAsset DigitalAsset?
-  bundle      Bundle?
-  
-  orders      Order[]
+
   enrollments Enrollment[]
-  
+  orderItems  OrderItem[]
+  prices      Price[]
+  accessTokens AccessToken[]
+
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
-  @@unique([tenantId, slug])
+  @@unique([workspaceId, slug])
 }
 
 enum ProductType {
   DIGITAL
   COURSE
-  COACHING
-  MEMBERSHIP
   FREEBIE
-  BUNDLE
 }
 
 enum ProductStatus {
@@ -170,22 +249,40 @@ enum ProductStatus {
   ARCHIVED
 }
 
+model Price {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  amount    Decimal  @db.Decimal(10, 2)
+  currency  String   @default("USD")
+  label     String?  // e.g. "Early Bird", "Full Price"
+
+  @@index([productId])
+}
+
+// ─── Course Builder ──────────────────────────────────────────────────────────
+
 model Course {
   id        String   @id @default(cuid())
   productId String   @unique
   product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  
-  modules   Module[]
+
+  modules   CourseModule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
-model Module {
+model CourseModule {
   id        String   @id @default(cuid())
   courseId  String
   title     String
   order     Int
-  
+
   course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
   lessons   Lesson[]
+
+  @@index([courseId, order])
 }
 
 model Lesson {
@@ -195,93 +292,204 @@ model Lesson {
   content   String?  @db.Text
   videoUrl  String?
   order     Int
-  
-  module    Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  lessonType LessonType @default(TEXT)
+
+  module    CourseModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
   progress  LessonProgress[]
+  muxAsset  MuxAsset?
+
+  @@index([moduleId, order])
 }
 
-model Coaching {
-  id          String   @id @default(cuid())
-  productId   String   @unique
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  calComLink  String?
+enum LessonType {
+  TEXT
+  VIDEO
+  EMBED
+  QUIZ
 }
 
-model Membership {
-  id          String   @id @default(cuid())
-  productId   String   @unique
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  interval    BillingInterval
+model MuxAsset {
+  id           String         @id @default(cuid())
+  lessonId     String         @unique
+  lesson       Lesson         @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  muxAssetId   String
+  muxPlaybackId String?
+  status       MuxAssetStatus @default(PREPARING)
+  duration     Int?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 }
 
-enum BillingInterval {
-  MONTHLY
-  YEARLY
+enum MuxAssetStatus {
+  PREPARING
+  READY
+  ERROR
+  DELETED
 }
 
-model DigitalAsset {
-  id          String   @id @default(cuid())
-  productId   String   @unique
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  fileUrl     String
-}
-
-model Bundle {
-  id          String   @id @default(cuid())
-  productId   String   @unique
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  
-  // Products included in the bundle
-  items       BundleItem[]
-}
-
-model BundleItem {
-  id          String   @id @default(cuid())
-  bundleId    String
-  productId   String
-  
-  bundle      Bundle   @relation(fields: [bundleId], references: [id], onDelete: Cascade)
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-}
+// ─── Orders & Checkout ───────────────────────────────────────────────────────
 
 model Order {
-  id          String      @id @default(cuid())
-  tenantId    String
-  userId      String
-  productId   String
-  amount      Decimal     @db.Decimal(10, 2)
-  currency    String
-  status      OrderStatus @default(PENDING)
-  stripeSessionId String? @unique
-  
-  tenant      Tenant      @relation(fields: [tenantId], references: [id])
-  user        User        @relation(fields: [userId], references: [id])
-  product     Product     @relation(fields: [productId], references: [id])
-  
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id               String      @id @default(cuid())
+  workspaceId      String
+  userId           String
+  customerEmail    String?
+  customerName     String?
+  amount           Decimal     @db.Decimal(10, 2)
+  currency         String      @default("USD")
+  status           OrderStatus @default(PENDING)
+  stripeSessionId  String?     @unique
+  stripePaymentIntentId String?
+
+  workspace        Workspace   @relation(fields: [workspaceId], references: [id])
+  user             User        @relation(fields: [userId], references: [id])
+
+  items            OrderItem[]
+  payments         Payment[]
+  accessTokens     AccessToken[]
+  emails           EmailLog[]
+
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  @@index([workspaceId, status])
+  @@index([userId])
+}
+
+model OrderItem {
+  id        String   @id @default(cuid())
+  orderId   String
+  productId String
+  quantity  Int      @default(1)
+  unitPrice Decimal  @db.Decimal(10, 2)
+
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
 }
 
 enum OrderStatus {
+  PENDING
+  PAID
+  FULFILLED
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id                  String           @id @default(cuid())
+  orderId             String
+  order               Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  stripePaymentIntentId String?        @unique
+  stripeSessionId     String?
+  amount              Decimal          @db.Decimal(10, 2)
+  currency            String           @default("USD")
+  status              PaymentStatus    @default(PENDING)
+  applicationFee      Decimal?         @db.Decimal(10, 2)
+  transferId          String?
+
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@index([orderId])
+  @@index([stripePaymentIntentId])
+}
+
+enum PaymentStatus {
   PENDING
   SUCCEEDED
   FAILED
   REFUNDED
 }
 
+// ─── Webhook Events (idempotency) ────────────────────────────────────────────
+
+model WebhookEvent {
+  id              String   @id @default(cuid())
+  stripeEventId   String   @unique
+  type            String
+  status          WebhookEventStatus @default(PENDING)
+  processedAt     DateTime?
+
+  createdAt       DateTime @default(now())
+
+  @@index([stripeEventId])
+  @@index([status])
+}
+
+enum WebhookEventStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+// ─── Access Tokens (fulfillment) ─────────────────────────────────────────────
+
+model AccessToken {
+  id           String         @id @default(cuid())
+  tokenHash    String         @unique
+  orderId      String
+  order        Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product        @relation(fields: [productId], references: [id])
+  maxUses      Int            @default(1)
+  useCount     Int            @default(0)
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  lastUsedAt   DateTime?
+
+  createdAt    DateTime       @default(now())
+
+  @@index([tokenHash])
+  @@index([orderId])
+}
+
+// ─── Post-Purchase Email System ──────────────────────────────────────────────
+
+model EmailLog {
+  id        String       @id @default(cuid())
+  orderId   String?
+  order     Order?       @relation(fields: [orderId], references: [id])
+  to        String
+  subject   String
+  template  String
+  status    EmailStatus  @default(SENT)
+  error     String?
+  openedAt  DateTime?
+  clickedAt DateTime?
+
+  createdAt DateTime     @default(now())
+
+  @@index([orderId])
+  @@index([status])
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  BOUNCED
+  OPENED
+  CLICKED
+  FAILED
+}
+
+// ─── Enrollment ──────────────────────────────────────────────────────────────
+
 model Enrollment {
-  id          String      @id @default(cuid())
+  id          String            @id @default(cuid())
   userId      String
   productId   String
   status      EnrollmentStatus @default(ACTIVE)
-  
-  user        User        @relation(fields: [userId], references: [id])
-  product     Product     @relation(fields: [productId], references: [id])
-  
+
+  user        User              @relation(fields: [userId], references: [id])
+  product     Product           @relation(fields: [productId], references: [id])
+
   progress    LessonProgress[]
-  
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
 
   @@unique([userId, productId])
 }
@@ -297,9 +505,200 @@ model LessonProgress {
   enrollmentId String
   lessonId     String
   completed    Boolean    @default(false)
-  
+
   enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
   lesson       Lesson     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
 
   @@unique([enrollmentId, lessonId])
+}
+
+// ─── Analytics ───────────────────────────────────────────────────────────────
+
+model AnalyticsDaily {
+  id             String   @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  date           DateTime
+
+  // Revenue
+  gmv            Decimal  @default(0) @db.Decimal(12, 2)
+  feeAmount      Decimal  @default(0) @db.Decimal(12, 2)
+  netRevenue     Decimal  @default(0) @db.Decimal(12, 2)
+
+  // Orders
+  orderCount     Int      @default(0)
+  refundCount    Int      @default(0)
+  conversionRate Decimal  @default(0) @db.Decimal(5, 2)
+
+  // Visitors
+  visitorCount   Int      @default(0)
+  pageViewCount  Int      @default(0)
+
+  // Top products (JSON array of {productId, name, revenue, orders})
+  topProducts    Json     @default("[]")
+
+  // Email
+  emailSent      Int      @default(0)
+  emailOpened    Int      @default(0)
+  emailClicked   Int      @default(0)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([workspaceId, date])
+  @@index([workspaceId, date])
+}
+
+// ─── AI Tools ────────────────────────────────────────────────────────────────
+
+model AiGenerationLog {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  prompt      String   @db.Text
+  result      String   @db.Text
+  model       String   @default("claude-sonnet-4-20250514")
+  tokensIn    Int      @default(0)
+  tokensOut   Int      @default(0)
+  durationMs  Int      @default(0)
+  feature     String   // "title", "description", "email", "lessonOutline", etc.
+
+  createdAt   DateTime @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([userId])
+}
+
+// ─── Email Marketing ─────────────────────────────────────────────────────────
+
+model Subscriber {
+  id           String          @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  email        String
+  name         String?
+  status       SubscriberStatus @default(ACTIVE)
+  metadata     Json            @default("{}")
+
+  // Unsubscribe management
+  unsubscribedAt DateTime?
+  unsubscribeReason String?
+
+  campaigns    CampaignSend[]
+  events       EmailEvent[]
+
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@unique([workspaceId, email])
+  @@index([workspaceId, status])
+}
+
+enum SubscriberStatus {
+  ACTIVE
+  UNSUBSCRIBED
+  BOUNCED
+  SPAM
+}
+
+model Segment {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  rules       Json     @default("{}") // Segment definition (e.g., {"purchased": true, "tag": "vip"})
+
+  campaigns   Campaign[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([workspaceId])
+}
+
+model Campaign {
+  id          String        @id @default(cuid())
+  workspaceId String
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name        String
+  subject     String
+  previewText String?
+  fromName    String?
+  replyTo     String?
+  htmlContent String        @db.Text
+  plainText   String?       @db.Text
+  status      CampaignStatus @default(DRAFT)
+  segmentId   String?
+  segment     Segment?      @relation(fields: [segmentId], references: [id])
+
+  scheduledAt DateTime?
+  sentAt      DateTime?
+
+  sends       CampaignSend[]
+  events      EmailEvent[]
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([workspaceId, status])
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  CANCELED
+}
+
+model CampaignSend {
+  id           String   @id @default(cuid())
+  campaignId   String
+  campaign     Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  subscriberId String
+  subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+  status       SendStatus @default(QUEUED)
+  error        String?
+  sentAt       DateTime?
+
+  createdAt    DateTime @default(now())
+
+  @@unique([campaignId, subscriberId])
+  @@index([campaignId])
+  @@index([subscriberId])
+}
+
+enum SendStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  BOUNCED
+  FAILED
+}
+
+model EmailEvent {
+  id           String       @id @default(cuid())
+  subscriberId String
+  subscriber   Subscriber   @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+  campaignId   String?
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id])
+  type         EmailEventType
+  metadata     Json         @default("{}")
+  ipAddress    String?
+  userAgent    String?
+  linkUrl      String?
+
+  createdAt    DateTime     @default(now())
+
+  @@index([subscriberId])
+  @@index([campaignId])
+  @@index([type])
+}
+
+enum EmailEventType {
+  OPENED
+  CLICKED
+  UNSUBSCRIBED
+  BOUNCED
+  COMPLAINED
 }

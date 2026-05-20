@@ -10,7 +10,7 @@ export const courseRouter = createTRPCRouter({
       order: z.number(),
     }))
     .mutation(({ ctx, input }) => {
-      return ctx.db.module.create({
+      return ctx.db.courseModule.create({
         data: input,
       });
     }),

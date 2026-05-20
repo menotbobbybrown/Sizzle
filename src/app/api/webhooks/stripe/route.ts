@@ -2,8 +2,7 @@ import { headers } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { env } from "@/env";
-import { db } from "@/server/db";
-import { SubscriptionStatus, SaaSPlan } from "@prisma/client";
+import { db } from "@/lib/db";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -25,27 +24,25 @@ export async function POST(req: NextRequest) {
 
   if (event.type === "checkout.session.completed") {
     const subscription = await stripe.subscriptions.retrieve(session.subscription);
-    const tenantId = session.metadata.tenantId;
+    const workspaceId = session.metadata.workspaceId;
 
-    if (tenantId) {
-      await db.tenant.update({
-        where: { id: tenantId },
+    if (workspaceId) {
+      await db.workspace.update({
+        where: { id: workspaceId },
         data: {
           stripeSubscriptionId: subscription.id,
-          subscriptionStatus: SubscriptionStatus.ACTIVE,
-          // You might want to map price ID to SaaSPlan enum
-          plan: SaaSPlan.BASIC, 
+          plan: "ACTIVE",
         },
       });
     }
   }
 
   if (event.type === "customer.subscription.deleted") {
-    await db.tenant.update({
+    await db.workspace.update({
       where: { stripeSubscriptionId: session.id },
       data: {
-        subscriptionStatus: SubscriptionStatus.CANCELED,
-        plan: SaaSPlan.FREE,
+        plan: "TRIALING",
+        stripeSubscriptionId: null,
       },
     });
   }

@@ -1,29 +1,37 @@
 import { z } from "zod";
-import { createTRPCRouter, protectedProcedure, publicProcedure } from "@/server/api/trpc";
+import { createTRPCRouter, protectedProcedure, creatorProcedure, publicProcedure } from "@/server/api/trpc";
 import { TRPCError } from "@trpc/server";
+import { isReservedHandle } from "@/config/route-map";
 
 export const tenantRouter = createTRPCRouter({
   create: protectedProcedure
     .input(z.object({
       name: z.string().min(1),
-      slug: z.string().min(1),
+      handle: z.string().min(2).regex(/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/),
     }))
     .mutation(async ({ ctx, input }) => {
-      const existing = await ctx.db.tenant.findUnique({
-        where: { slug: input.slug },
+      if (isReservedHandle(input.handle)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This handle is reserved",
+        });
+      }
+
+      const existing = await ctx.db.workspace.findUnique({
+        where: { handle: input.handle },
       });
 
       if (existing) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "Slug already taken",
+          message: "Handle already taken",
         });
       }
 
-      return ctx.db.tenant.create({
+      return ctx.db.workspace.create({
         data: {
           name: input.name,
-          slug: input.slug,
+          handle: input.handle,
           members: {
             create: {
               userId: ctx.session.user.id,
@@ -35,7 +43,7 @@ export const tenantRouter = createTRPCRouter({
     }),
 
   getAll: protectedProcedure.query(({ ctx }) => {
-    return ctx.db.tenant.findMany({
+    return ctx.db.workspace.findMany({
       where: {
         members: {
           some: {
@@ -46,11 +54,43 @@ export const tenantRouter = createTRPCRouter({
     });
   }),
 
-  getBySlug: publicProcedure
-    .input(z.object({ slug: z.string() }))
+  getByHandle: publicProcedure
+    .input(z.object({ handle: z.string() }))
     .query(({ ctx, input }) => {
-      return ctx.db.tenant.findUnique({
-        where: { slug: input.slug },
+      return ctx.db.workspace.findUnique({
+        where: { handle: input.handle },
+        include: {
+          products: {
+            where: { status: "PUBLISHED" },
+          },
+        },
+      });
+    }),
+
+  getCurrent: creatorProcedure.query(({ ctx }) => {
+    return ctx.db.workspace.findUnique({
+      where: { id: ctx.workspace.id },
+      include: {
+        products: true,
+        storefront: true,
+        members: {
+          include: { user: true },
+        },
+      },
+    });
+  }),
+
+  update: creatorProcedure
+    .input(z.object({
+      name: z.string().optional(),
+      logoUrl: z.string().url().optional(),
+      bannerUrl: z.string().url().optional(),
+      bio: z.string().optional(),
+    }))
+    .mutation(({ ctx, input }) => {
+      return ctx.db.workspace.update({
+        where: { id: ctx.workspace.id },
+        data: input,
       });
     }),
 });
