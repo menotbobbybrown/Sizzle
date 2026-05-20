@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Order Receipt</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 0; background-color: #f4f4f5;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 600px; margin: 0 auto; padding: 24px;">
+    <tr>
+      <td style="text-align: center; padding: 24px 0;">
+        <h1 style="font-size: 24px; margin: 0;">Thank you for your purchase!</h1>
+        <p style="color: #71717a; margin-top: 8px;">Your order has been confirmed.</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="padding-bottom: 16px; border-bottom: 1px solid #e4e4e7;">
+              <h2 style="font-size: 18px; margin: 0;">{{productName}}</h2>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 16px 0;">
+              <table width="100%">
+                <tr>
+                  <td style="color: #71717a;">Amount paid</td>
+                  <td style="text-align: right; font-weight: 600;">${{amount}}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="border-top: 1px solid #e4e4e7; padding-top: 16px;">
+              <a href="{{accessUrl}}" style="display: inline-block; background: #000; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 500;">
+                Access your purchase
+              </a>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+    <tr>
+      <td style="text-align: center; padding-top: 24px; color: #71717a; font-size: 12px;">
+        <p>Powered by Sizzle</p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

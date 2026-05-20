@@ -1,17 +1,13 @@
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import NextAuth, { type DefaultSession } from "next-auth";
 import GitHub from "next-auth/providers/github";
+import Google from "next-auth/providers/google";
+import Resend from "next-auth/providers/resend";
 
 import { env } from "@/env";
-import { db } from "@/server/db";
+import { db } from "@/lib/db";
 import { type UserRole } from "@prisma/client";
 
-/**
- * Module augmentation for `next-auth` types. Allows us to add custom properties to the `session`
- * object and keep type safety.
- *
- * @see https://next-auth.js.org/getting-started/typescript#module-augmentation
- */
 declare module "next-auth" {
   interface Session extends DefaultSession {
     user: {
@@ -28,6 +24,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       clientId: process.env.GITHUB_CLIENT_ID,
       clientSecret: process.env.GITHUB_CLIENT_SECRET,
     }),
+    Google({
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    }),
+    Resend({
+      apiKey: env.RESEND_API_KEY,
+      from: env.EMAIL_FROM,
+    }),
   ],
   callbacks: {
     session: ({ session, user }) => ({
@@ -35,8 +39,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       user: {
         ...session.user,
         id: user.id,
-        role: (user as any).role, // Cast as any because of adapter types
+        role: (user as any).role,
       },
     }),
+  },
+  pages: {
+    signIn: "/login",
   },
 });

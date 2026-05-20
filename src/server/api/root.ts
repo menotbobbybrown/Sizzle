@@ -6,6 +6,10 @@ import { storefrontRouter } from "@/server/api/routers/storefront";
 import { checkoutRouter } from "@/server/api/routers/checkout";
 import { courseRouter } from "@/server/api/routers/course";
 import { userRouter } from "@/server/api/routers/user";
+import { analyticsRouter } from "@/server/api/routers/analytics";
+import { campaignRouter } from "@/server/api/routers/campaigns";
+import { subscriberRouter } from "@/server/api/routers/subscribers";
+import { aiRouter } from "@/server/api/routers/ai";
 import { createTRPCRouter } from "@/server/api/trpc";
 
 /**
@@ -22,6 +26,10 @@ export const appRouter = createTRPCRouter({
   checkout: checkoutRouter,
   course: courseRouter,
   user: userRouter,
+  analytics: analyticsRouter,
+  campaign: campaignRouter,
+  subscriber: subscriberRouter,
+  ai: aiRouter,
 });
 
 // export type definition of API

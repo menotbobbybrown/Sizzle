@@ -4,35 +4,44 @@ import { TRPCError } from "@trpc/server";
 
 export const storefrontRouter = createTRPCRouter({
   getStore: publicProcedure
-    .input(z.object({ slug: z.string() }))
+    .input(z.object({ handle: z.string() }))
     .query(async ({ ctx, input }) => {
-      const tenant = await ctx.db.tenant.findUnique({
-        where: { slug: input.slug },
+      const workspace = await ctx.db.workspace.findUnique({
+        where: { handle: input.handle },
         include: {
           products: {
             where: { status: "PUBLISHED" },
           },
+          storefront: true,
         },
       });
 
-      if (!tenant) {
+      if (!workspace) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Store not found" });
       }
 
-      return tenant;
+      return workspace;
     }),
 
   getProduct: publicProcedure
-    .input(z.object({ tenantSlug: z.string(), productSlug: z.string() }))
+    .input(z.object({ handle: z.string(), productSlug: z.string() }))
     .query(async ({ ctx, input }) => {
       const product = await ctx.db.product.findFirst({
         where: {
           slug: input.productSlug,
-          tenant: { slug: input.tenantSlug },
+          workspace: { handle: input.handle },
           status: "PUBLISHED",
         },
         include: {
-          tenant: true,
+          workspace: true,
+          course: {
+            include: {
+              modules: {
+                include: { lessons: true },
+                orderBy: { order: "asc" },
+              },
+            },
+          },
         },
       });
 
