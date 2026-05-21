@@ -130,11 +130,13 @@ enum WorkspaceRole {
 }
 
 enum WorkspacePlan {
-  ACTIVE
+  FREE
+  CREATOR
+  PRO
+  BUSINESS
   TRIALING
   PAST_DUE
   CANCELED
-  INACTIVE
 }
 
 // ─── Onboarding ──────────────────────────────────────────────────────────────
@@ -242,6 +244,8 @@ model Product {
   reviews   Review[]
 
   @@unique([workspaceId, slug])
+  @@index([workspaceId, status])
+  @@index([slug])
 }
 
 enum ProductType {
@@ -368,7 +372,8 @@ enum MuxAssetStatus {
 model Order {
   id                    String        @id @default(cuid())
   workspaceId           String
-  userId                String
+  userId                String?
+  isGuest               Boolean       @default(false)
   customerEmail         String?
   customerName          String?
   amount                Decimal       @db.Decimal(10, 2)
@@ -390,7 +395,10 @@ model Order {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([workspaceId, status])
+  @@index([workspaceId, createdAt])
+  @@index([customerEmail])
+  @@index([status])
+  @@index([stripeSessionId])
   @@index([userId])
   @@index([discountCodeId])
 }
@@ -482,6 +490,7 @@ model AccessToken {
 
   @@index([tokenHash])
   @@index([orderId])
+  @@index([expiresAt])
 }
 
 // ─── Post-Purchase Email System ──────────────────────────────────────────────
@@ -586,6 +595,7 @@ model AnalyticsDaily {
 
   @@unique([workspaceId, date])
   @@index([workspaceId, date])
+  @@index([date])
 }
 
 // ─── AI Tools ────────────────────────────────────────────────────────────────
@@ -630,7 +640,7 @@ model Subscriber {
   updatedAt DateTime @updatedAt
 
   @@unique([workspaceId, email])
-  @@index([workspaceId, status])
+  @@index([workspaceId, status, createdAt])
 }
 
 enum SubscriberStatus {

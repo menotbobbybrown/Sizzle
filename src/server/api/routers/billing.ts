@@ -6,16 +6,22 @@ import { PRICING } from "@/config/pricing";
 
 export const billingRouter = createTRPCRouter({
   createCheckoutSession: creatorProcedure
-    .mutation(async ({ ctx }) => {
+    .input(z.object({ planId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const tier = PRICING.tiers.find((t) => t.id === input.planId);
+      if (!tier) {
+        throw new Error("Invalid plan selected");
+      }
+
       const session = await stripe.checkout.sessions.create({
         customer_email: ctx.session.user.email ?? undefined,
         line_items: [
           {
             price_data: {
               currency: "usd",
-              product_data: { name: PRICING.name },
-              unit_amount: PRICING.price,
-              recurring: { interval: PRICING.interval },
+              product_data: { name: tier.name },
+              unit_amount: tier.price,
+              recurring: { interval: tier.interval },
             },
             quantity: 1,
           },
@@ -25,6 +31,7 @@ export const billingRouter = createTRPCRouter({
         cancel_url: `${env.NEXT_PUBLIC_APP_URL}/dashboard/billing?canceled=true`,
         metadata: {
           workspaceId: ctx.workspace.id,
+          planId: tier.id,
         },
       });
 
@@ -41,8 +48,8 @@ export const billingRouter = createTRPCRouter({
     return {
       id: subscription.id,
       status: subscription.status,
-      currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-      cancelAtPeriodEnd: subscription.cancel_at_period_end,
+      currentPeriodEnd: new Date((subscription as any).current_period_end * 1000),
+      cancelAtPeriodEnd: (subscription as any).cancel_at_period_end,
     };
   }),
 
