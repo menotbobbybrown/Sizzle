@@ -76,10 +76,15 @@ export const checkoutRouter = createTRPCRouter({
         success_url: successUrl,
         cancel_url: cancelUrl,
         customer_email: ctx.session?.user?.email ?? undefined,
+        payment_intent_data: {
+          transfer_data: {
+            destination: product.workspace.stripeAccountId,
+          },
+        },
         metadata: {
           productId: product.id,
           workspaceId: product.workspace.id,
-          userId: ctx.session?.user?.id ?? "anonymous",
+          userId: ctx.session?.user?.id ?? "",
           discountCode: input.discountCode ?? "",
         },
       });

@@ -54,7 +54,8 @@ export async function POST(req: NextRequest) {
       const order = await db.order.create({
         data: {
           workspaceId,
-          userId: session.metadata.userId ?? "anonymous",
+          userId: session.metadata.userId || null,
+          isGuest: !session.metadata.userId,
           customerEmail,
           customerName,
           amount: session.amount_total / 100,
@@ -95,17 +96,17 @@ export async function POST(req: NextRequest) {
           });
 
           // Create enrollment for course products
-          if (product.type === "COURSE") {
+          if (product.type === "COURSE" && session.metadata.userId) {
             await db.enrollment.upsert({
               where: {
                 userId_productId: {
-                  userId: session.metadata.userId ?? "anonymous",
+                  userId: session.metadata.userId,
                   productId,
                 },
               },
               update: { status: "ACTIVE" },
               create: {
-                userId: session.metadata.userId ?? "anonymous",
+                userId: session.metadata.userId,
                 productId,
                 status: "ACTIVE",
               },

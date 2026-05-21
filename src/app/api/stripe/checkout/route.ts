@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { env } from "@/env";
 import { db } from "@/lib/db";
-import { headers } from "next/headers";
+import { auth } from "@/lib/auth";
 
 export async function POST(req: Request) {
   try {
@@ -11,6 +11,9 @@ export async function POST(req: Request) {
     if (!productId || typeof productId !== "string") {
       return NextResponse.json({ error: "Missing productId" }, { status: 400 });
     }
+
+    const session_auth = await auth();
+    const userId = session_auth?.user?.id ?? "";
 
     const product = await db.product.findUnique({
       where: { id: productId },
@@ -23,7 +26,7 @@ export async function POST(req: Request) {
 
     if (!product.workspace.stripeAccountId) {
       return NextResponse.json(
-        { error: "This creator cannot accept payments yet" },
+        { error: "This creator cannot accept payments yet. Please contact them or try again later." },
         { status: 400 }
       );
     }
@@ -45,9 +48,15 @@ export async function POST(req: Request) {
       mode: "payment",
       success_url: `${env.NEXT_PUBLIC_APP_URL}/store/${product.workspace.handle}/p/${product.slug}?success=true`,
       cancel_url: `${env.NEXT_PUBLIC_APP_URL}/store/${product.workspace.handle}/p/${product.slug}?canceled=true`,
+      payment_intent_data: {
+        transfer_data: {
+          destination: product.workspace.stripeAccountId,
+        },
+      },
       metadata: {
         productId: product.id,
         workspaceId: product.workspace.id,
+        userId: userId,
       },
     });
 

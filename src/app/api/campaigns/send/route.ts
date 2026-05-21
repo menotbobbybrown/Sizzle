@@ -57,7 +57,7 @@ export async function POST(req: Request) {
           from: campaign.fromName
             ? `${campaign.fromName} <${campaign.replyTo ?? "noreply@sizzle.so"}>`
             : undefined,
-          replyTo: campaign.replyTo,
+          replyTo: campaign.replyTo ?? undefined,
           tags: [
             { name: "campaignId", value: campaignId },
             { name: "subscriberId", value: subscriber.id },

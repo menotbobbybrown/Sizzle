@@ -4,6 +4,7 @@ import { stripe } from "@/lib/stripe";
 import { env } from "@/env";
 import { db } from "@/lib/db";
 import { generateToken, hashToken, DEFAULT_TOKEN_CONFIG } from "@/lib/tokens";
+import { type WorkspacePlan } from "@prisma/client";
 
 /**
  * Stripe Webhook Handler
@@ -64,6 +65,10 @@ export async function POST(req: NextRequest) {
       await handleChargeRefunded(session);
     }
 
+    if (event.type === "customer.subscription.created" || event.type === "customer.subscription.updated") {
+      await handleSubscriptionUpdated(session);
+    }
+
     if (event.type === "customer.subscription.deleted") {
       await handleSubscriptionDeleted(session);
     }
@@ -98,7 +103,8 @@ async function handleCheckoutCompleted(session: any) {
   const order = await db.order.create({
     data: {
       workspaceId,
-      userId: userId !== "anonymous" ? userId : null,
+      userId: userId || null,
+      isGuest: !userId,
       customerEmail,
       customerName,
       amount,
@@ -155,7 +161,7 @@ async function handleCheckoutCompleted(session: any) {
       });
 
       // Create enrollment for course products
-      if (product.type === "COURSE" && userId !== "anonymous") {
+      if (product.type === "COURSE" && userId) {
         await db.enrollment.upsert({
           where: {
             userId_productId: {
@@ -311,6 +317,31 @@ async function handleChargeRefunded(session: any) {
   }
 }
 
+async function handleSubscriptionUpdated(subscription: any) {
+  const { workspaceId, planId } = subscription.metadata ?? {};
+  
+  if (!workspaceId) {
+    console.error("[Stripe Webhook] Missing workspaceId in subscription metadata");
+    return;
+  }
+
+  const planMap: Record<string, WorkspacePlan> = {
+    creator: "CREATOR",
+    pro: "PRO",
+    business: "BUSINESS",
+  };
+
+  const plan = planMap[planId] || "FREE";
+
+  await db.workspace.update({
+    where: { id: workspaceId },
+    data: {
+      plan,
+      stripeSubscriptionId: subscription.id,
+    },
+  });
+}
+
 async function handleSubscriptionDeleted(session: any) {
   // This handles SaaS subscription cancellations (not product purchases)
   const subscription = session.object === "subscription"
@@ -320,7 +351,7 @@ async function handleSubscriptionDeleted(session: any) {
   await db.workspace.updateMany({
     where: { stripeSubscriptionId: subscription.id },
     data: {
-      plan: "TRIALING",
+      plan: "FREE",
       stripeSubscriptionId: null,
     },
   });

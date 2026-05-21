@@ -76,12 +76,8 @@ export const creatorRouter = createTRPCRouter({
   /**
    * Connect Stripe account (OAuth flow)
    */
-  connectStripe: creatorProcedure.mutation(async ({ ctx }) => {
-    // TODO: Implement Stripe Connect OAuth
-    throw new TRPCError({
-      code: "NOT_IMPLEMENTED",
-      message: "Stripe Connect integration pending",
-    });
+  connectStripe: creatorProcedure.mutation(async () => {
+    return { url: "/api/stripe/connect" };
   }),
 
   /**
