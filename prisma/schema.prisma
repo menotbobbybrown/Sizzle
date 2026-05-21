@@ -54,6 +54,8 @@ model User {
   enrollments   Enrollment[]
   reviews       Review[]
   notifications Notification[]
+  memberSubscriptions MemberSubscription[]
+  affiliateLinks AffiliateLink[]
 
   // Onboarding state
   onboarding OnboardingState?
@@ -105,6 +107,11 @@ model Workspace {
 
   // Analytics aggregates
   analytics AnalyticsDaily[]
+  
+  recentSales RecentSale[]
+  socialConnections SocialConnection[]
+  affiliateLinks AffiliateLink[]
+  memberSubscriptions MemberSubscription[]
 
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
@@ -228,20 +235,29 @@ model Product {
   type        ProductType
   status      ProductStatus @default(DRAFT)
   imageUrl    String?
+  
+  // New pricing features
+  pricingType    PricingType    @default(FIXED)
+  minPrice       Decimal?       @db.Decimal(10, 2)
+  suggestedPrice Decimal?       @db.Decimal(10, 2)
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Sub-type relations
-  course Course?
+  course           Course?
+  coachingConfig   CoachingConfig?
+  membershipConfig MembershipConfig?
 
   enrollments  Enrollment[]
   orderItems   OrderItem[]
   prices       Price[]
   accessTokens AccessToken[]
+  reviews      Review[]
+  recentSales  RecentSale[]
+  memberSubscriptions MemberSubscription[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  reviews   Review[]
 
   @@unique([workspaceId, slug])
   @@index([workspaceId, status])
@@ -252,12 +268,20 @@ enum ProductType {
   DIGITAL
   COURSE
   FREEBIE
+  COACHING
+  MEMBERSHIP
 }
 
 enum ProductStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
+}
+
+enum PricingType {
+  FIXED
+  PWYW
+  FREE
 }
 
 // ─── Discount Codes ────────────────────────────────────────────────────────────
@@ -367,6 +391,69 @@ enum MuxAssetStatus {
   DELETED
 }
 
+// ─── Coaching ────────────────────────────────────────────────────────────────
+
+model CoachingConfig {
+  id          String  @id @default(cuid())
+  productId   String  @unique
+  product     Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  calLink     String
+  eventTypeId Int?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Membership ──────────────────────────────────────────────────────────────
+
+model MembershipConfig {
+  id          String  @id @default(cuid())
+  productId   String  @unique
+  product     Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  interval    PlanInterval @default(MONTH)
+  stripePriceId String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum PlanInterval {
+  MONTH
+  YEAR
+}
+
+model MemberSubscription {
+  id               String             @id @default(cuid())
+  userId           String
+  workspaceId      String
+  productId        String
+  stripeSubscriptionId String          @unique
+  status           SubscriptionStatus
+  currentPeriodEnd DateTime
+  cancelAtPeriodEnd Boolean            @default(false)
+  
+  user      User      @relation(fields: [userId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  product   Product   @relation(fields: [productId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([stripeSubscriptionId])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+}
+
 // ─── Orders & Checkout ───────────────────────────────────────────────────────
 
 model Order {
@@ -383,6 +470,11 @@ model Order {
   stripePaymentIntentId String?
   discountCodeId        String?
   discountCode          DiscountCode? @relation(fields: [discountCodeId], references: [id])
+  
+  // Affiliate attribution
+  affiliateLinkId      String?
+  affiliateLink        AffiliateLink? @relation(fields: [affiliateLinkId], references: [id])
+  affiliateCommission  Decimal?       @db.Decimal(10, 2)
 
   workspace Workspace @relation(fields: [workspaceId], references: [id])
   user      User?     @relation(fields: [userId], references: [id])
@@ -401,6 +493,7 @@ model Order {
   @@index([stripeSessionId])
   @@index([userId])
   @@index([discountCodeId])
+  @@index([affiliateLinkId])
 }
 
 model OrderItem {
@@ -530,6 +623,10 @@ model Enrollment {
   userId    String
   productId String
   status    EnrollmentStatus @default(ACTIVE)
+  
+  // Certificate
+  certificateUrl String?
+  completedAt    DateTime?
 
   user    User    @relation(fields: [userId], references: [id])
   product Product @relation(fields: [productId], references: [id])
@@ -558,6 +655,83 @@ model LessonProgress {
   lesson     Lesson     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
 
   @@unique([enrollmentId, lessonId])
+}
+
+// ─── Recent Sales Social Proof ───────────────────────────────────────────────
+
+model RecentSale {
+  id          String    @id @default(cuid())
+  workspaceId String
+  productId   String
+  buyerName   String    // Anonymized
+  amount      Decimal   @db.Decimal(10, 2)
+  createdAt   DateTime  @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+}
+
+// ─── Social Connections ──────────────────────────────────────────────────────
+
+model SocialConnection {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  provider     String   // "tiktok", "youtube", "instagram"
+  providerId   String
+  accessToken  String?  @db.Text // Encrypted
+  refreshToken String?  @db.Text // Encrypted
+  expiresAt    DateTime?
+  metadata     Json     @default("{}") // Stats like follower count
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workspaceId, provider])
+}
+
+// ─── Affiliate Program ───────────────────────────────────────────────────────
+
+model AffiliateLink {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  code        String   @unique
+  commission  Decimal  @db.Decimal(5, 2) // Percentage
+  isActive    Boolean  @default(true)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payouts   AffiliatePayout[]
+  orders    Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@index([userId])
+}
+
+model AffiliatePayout {
+  id              String        @id @default(cuid())
+  affiliateLinkId String
+  amount          Decimal       @db.Decimal(10, 2)
+  status          PayoutStatus  @default(PENDING)
+  paidAt          DateTime?
+
+  affiliateLink AffiliateLink @relation(fields: [affiliateLinkId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+  CANCELLED
 }
 
 // ─── Analytics ───────────────────────────────────────────────────────────────

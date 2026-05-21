@@ -1,12 +1,22 @@
 import Link from "next/link";
+import { db } from "@/lib/db";
+import { auth } from "@/lib/auth";
+import { PusherListener } from "@/components/dashboard/pusher-listener";
 
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const session = await auth();
+  const membership = await db.workspaceMember.findFirst({
+    where: { userId: session?.user?.id },
+    orderBy: { createdAt: "asc" },
+  });
+
   return (
     <div className="min-h-screen flex">
+      <PusherListener workspaceId={membership?.workspaceId ?? ""} />
       <aside className="w-64 border-r border-zinc-200 bg-white hidden md:flex flex-col">
         <div className="p-4 border-b border-zinc-100">
           <Link href="/dashboard" className="text-lg font-bold text-zinc-900">

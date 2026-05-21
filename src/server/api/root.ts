@@ -18,6 +18,7 @@ import { billingRouter } from "@/server/api/routers/billing";
 import { tenantRouter } from "@/server/api/routers/tenant";
 import { userRouter } from "@/server/api/routers/user";
 import { exampleRouter } from "@/server/api/routers/example";
+import { affiliateRouter } from "@/server/api/routers/affiliate";
 import { createTRPCRouter } from "@/server/api/trpc";
 
 /**
@@ -31,6 +32,9 @@ export const appRouter = createTRPCRouter({
   auth: authRouter,
   user: userRouter,
   tenant: tenantRouter,
+
+  // Affiliates
+  affiliate: affiliateRouter,
 
   // Creator & storefront
   creator: creatorRouter,

@@ -3,19 +3,9 @@ import { type NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { env } from "@/env";
 import { db } from "@/lib/db";
+import { inngest } from "@/lib/inngest";
 import { generateToken, hashToken, DEFAULT_TOKEN_CONFIG } from "@/lib/tokens";
-import { type WorkspacePlan } from "@prisma/client";
 
-/**
- * Stripe Webhook Handler
- * 
- * Handles Stripe payment events:
- * - checkout.session.completed (payment successful)
- * - checkout.session.expired (payment abandoned)
- * - charge.refunded (refund processed)
- * 
- * All events are idempotent - duplicate events are safely ignored.
- */
 export async function POST(req: NextRequest) {
   const body = await req.text();
   const signature = (await headers()).get("Stripe-Signature") as string;
@@ -28,17 +18,14 @@ export async function POST(req: NextRequest) {
     return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
   }
 
-  // Idempotency check - have we already processed this event?
   const existingEvent = await db.webhookEvent.findUnique({
     where: { stripeEventId: event.id },
   });
 
   if (existingEvent?.status === "PROCESSED") {
-    console.log(`[Stripe Webhook] Duplicate event ${event.id} - skipping`);
     return NextResponse.json({ received: true, idempotent: true });
   }
 
-  // Record the event
   const webhookEvent = await db.webhookEvent.upsert({
     where: { stripeEventId: event.id },
     update: {},
@@ -50,36 +37,35 @@ export async function POST(req: NextRequest) {
   });
 
   try {
-    const session = event.data.object as any;
-    console.log(`[Stripe Webhook] Processing: ${event.type}`);
+    const data = event.data.object as any;
 
-    if (event.type === "checkout.session.completed") {
-      await handleCheckoutCompleted(session);
+    switch (event.type) {
+      case "checkout.session.completed":
+        await handleCheckoutCompleted(data);
+        break;
+      case "checkout.session.expired":
+        await handleCheckoutExpired(data);
+        break;
+      case "charge.refunded":
+        await handleChargeRefunded(data);
+        break;
+      case "customer.subscription.created":
+      case "customer.subscription.updated":
+        await handleSubscriptionCreatedOrUpdated(data);
+        break;
+      case "customer.subscription.deleted":
+        await handleSubscriptionDeleted(data);
+        break;
+      case "invoice.payment_failed":
+        await handleInvoicePaymentFailed(data);
+        break;
     }
 
-    if (event.type === "checkout.session.expired") {
-      await handleCheckoutExpired(session);
-    }
-
-    if (event.type === "charge.refunded") {
-      await handleChargeRefunded(session);
-    }
-
-    if (event.type === "customer.subscription.created" || event.type === "customer.subscription.updated") {
-      await handleSubscriptionUpdated(session);
-    }
-
-    if (event.type === "customer.subscription.deleted") {
-      await handleSubscriptionDeleted(session);
-    }
-
-    // Mark as processed
     await db.webhookEvent.update({
       where: { id: webhookEvent.id },
       data: { status: "PROCESSED", processedAt: new Date() },
     });
 
-    console.log(`[Stripe Webhook] Successfully processed ${event.type}`);
   } catch (error) {
     console.error(`[Stripe Webhook] Error processing ${event.type}:`, error);
     await db.webhookEvent.update({
@@ -93,13 +79,30 @@ export async function POST(req: NextRequest) {
 }
 
 async function handleCheckoutCompleted(session: any) {
-  const { productId, workspaceId, userId, discountCode } = session.metadata ?? {};
+  const { productId, workspaceId, userId, discountCode, affiliateCode } = session.metadata ?? {};
+  
+  const existingOrder = await db.order.findUnique({
+    where: { stripeSessionId: session.id },
+  });
+  if (existingOrder) return existingOrder;
+
   const customerEmail = session.customer_details?.email;
   const customerName = session.customer_details?.name;
   const amount = session.amount_total / 100;
   const currency = session.currency.toUpperCase();
 
-  // Create the order
+  let affiliateLinkId = null;
+  let affiliateCommission = null;
+  if (affiliateCode) {
+    const affiliate = await db.affiliateLink.findUnique({
+      where: { code: affiliateCode },
+    });
+    if (affiliate && affiliate.isActive) {
+      affiliateLinkId = affiliate.id;
+      affiliateCommission = (amount * Number(affiliate.commission)) / 100;
+    }
+  }
+
   const order = await db.order.create({
     data: {
       workspaceId,
@@ -112,7 +115,8 @@ async function handleCheckoutCompleted(session: any) {
       status: "PAID",
       stripeSessionId: session.id,
       stripePaymentIntentId: session.payment_intent,
-      // Link discount code if used
+      affiliateLinkId,
+      affiliateCommission,
       ...(discountCode
         ? {
             discountCode: {
@@ -123,15 +127,6 @@ async function handleCheckoutCompleted(session: any) {
     },
   });
 
-  // Update discount code usage
-  if (discountCode) {
-    await db.discountCode.update({
-      where: { code: discountCode.toUpperCase() },
-      data: { usedCount: { increment: 1 } },
-    });
-  }
-
-  // Create order item
   if (productId) {
     const product = await db.product.findUnique({ where: { id: productId } });
     if (product) {
@@ -144,7 +139,6 @@ async function handleCheckoutCompleted(session: any) {
         },
       });
 
-      // Generate access token for digital fulfillment
       const rawToken = generateToken();
       const tokenHash = hashToken(rawToken);
 
@@ -154,49 +148,20 @@ async function handleCheckoutCompleted(session: any) {
           orderId: order.id,
           productId,
           maxUses: DEFAULT_TOKEN_CONFIG.maxUses,
-          expiresAt: new Date(
-            Date.now() + DEFAULT_TOKEN_CONFIG.expiresInHours * 60 * 60 * 1000
-          ),
+          expiresAt: new Date(Date.now() + DEFAULT_TOKEN_CONFIG.expiresInHours * 60 * 60 * 1000),
         },
       });
 
-      // Create enrollment for course products
       if (product.type === "COURSE" && userId) {
         await db.enrollment.upsert({
-          where: {
-            userId_productId: {
-              userId,
-              productId,
-            },
-          },
+          where: { userId_productId: { userId, productId } },
           update: { status: "ACTIVE" },
-          create: {
-            userId,
-            productId,
-            status: "ACTIVE",
-          },
+          create: { userId, productId, status: "ACTIVE" },
         });
       }
-
-      // Update product stats
-      await db.product.update({
-        where: { id: productId },
-        data: {
-          orderItems: { connect: { id: (await db.orderItem.findFirst({ where: { orderId: order.id } }))?.id } },
-        },
-      });
-
-      // Update workspace denormalized stats
-      await db.workspace.update({
-        where: { id: workspaceId },
-        data: {
-          orders: { connect: { id: order.id } },
-        },
-      });
     }
   }
 
-  // Create payment record
   await db.payment.create({
     data: {
       orderId: order.id,
@@ -208,70 +173,22 @@ async function handleCheckoutCompleted(session: any) {
     },
   });
 
-  // Add buyer to email subscribers
-  if (customerEmail) {
-    await db.subscriber.upsert({
-      where: {
-        workspaceId_email: {
-          workspaceId,
-          email: customerEmail.toLowerCase(),
-        },
-      },
-      update: {
-        status: "ACTIVE",
-        unsubscribedAt: null,
-      },
-      create: {
-        workspaceId,
-        email: customerEmail.toLowerCase(),
-        name: customerName,
-        status: "ACTIVE",
-        metadata: {
-          source: "purchase",
-          productId,
-          orderId: order.id,
-        },
-      },
+  if (discountCode) {
+    await db.discountCode.update({
+      where: { code: discountCode.toUpperCase() },
+      data: { usedCount: { increment: 1 } },
     });
   }
 
-  // Create notification for creator
-  const workspace = await db.workspace.findUnique({
-    where: { id: workspaceId },
-    include: { members: { where: { role: { in: ["OWNER", "ADMIN"] } } } },
-  });
-
-  if (workspace) {
-    for (const member of workspace.members) {
-      await db.notification.create({
-        data: {
-          userId: member.userId,
-          type: "order_placed",
-          title: "New Order!",
-          message: `You received a new order for ${order.amount} ${currency}.`,
-          data: {
-            orderId: order.id,
-            amount,
-            currency,
-            customerEmail,
-          },
-        },
-      });
-    }
-  }
-
-  // Log email send
-  await db.emailLog.create({
+  await inngest.send({
+    name: "shop/order.paid",
     data: {
       orderId: order.id,
-      to: customerEmail ?? "",
-      subject: `Your purchase of ${(await db.product.findUnique({ where: { id: productId } }))?.name ?? "product"}`,
-      template: "purchase_confirmation",
-      status: "SENT",
+      sessionId: session.id,
     },
   });
 
-  console.log(`[Stripe Webhook] Order created: ${order.id}`);
+  return order;
 }
 
 async function handleCheckoutExpired(session: any) {
@@ -284,7 +201,6 @@ async function handleCheckoutExpired(session: any) {
       where: { id: order.id },
       data: { status: "FAILED" },
     });
-    console.log(`[Stripe Webhook] Order ${order.id} marked as failed (expired)`);
   }
 }
 
@@ -307,54 +223,52 @@ async function handleChargeRefunded(session: any) {
       data: { status: "REFUNDED" },
     });
 
-    // Revoke access tokens
     await db.accessToken.updateMany({
       where: { orderId: payment.orderId },
       data: { revokedAt: new Date() },
     });
-
-    console.log(`[Stripe Webhook] Refund processed for order ${payment.orderId}`);
   }
 }
 
-async function handleSubscriptionUpdated(subscription: any) {
-  const { workspaceId, planId } = subscription.metadata ?? {};
-  
-  if (!workspaceId) {
-    console.error("[Stripe Webhook] Missing workspaceId in subscription metadata");
-    return;
-  }
+async function handleSubscriptionCreatedOrUpdated(sub: any) {
+  const { workspaceId, userId, productId } = sub.metadata ?? {};
+  if (!workspaceId || !userId || !productId) return;
 
-  const planMap: Record<string, WorkspacePlan> = {
-    creator: "CREATOR",
-    pro: "PRO",
-    business: "BUSINESS",
-  };
-
-  const plan = planMap[planId] || "FREE";
-
-  await db.workspace.update({
-    where: { id: workspaceId },
-    data: {
-      plan,
-      stripeSubscriptionId: subscription.id,
+  await db.memberSubscription.upsert({
+    where: { stripeSubscriptionId: sub.id },
+    create: {
+      userId,
+      workspaceId,
+      productId,
+      stripeSubscriptionId: sub.id,
+      status: sub.status.toUpperCase(),
+      currentPeriodEnd: new Date(sub.current_period_end * 1000),
+      cancelAtPeriodEnd: sub.cancel_at_period_end,
+    },
+    update: {
+      status: sub.status.toUpperCase(),
+      currentPeriodEnd: new Date(sub.current_period_end * 1000),
+      cancelAtPeriodEnd: sub.cancel_at_period_end,
     },
   });
 }
 
-async function handleSubscriptionDeleted(session: any) {
-  // This handles SaaS subscription cancellations (not product purchases)
-  const subscription = session.object === "subscription"
-    ? session
-    : await stripe.subscriptions.retrieve(session.id);
-
-  await db.workspace.updateMany({
-    where: { stripeSubscriptionId: subscription.id },
+async function handleSubscriptionDeleted(sub: any) {
+  await db.memberSubscription.updateMany({
+    where: { stripeSubscriptionId: sub.id },
     data: {
-      plan: "FREE",
-      stripeSubscriptionId: null,
+      status: "CANCELED",
     },
   });
+}
 
-  console.log(`[Stripe Webhook] Subscription deleted`);
+async function handleInvoicePaymentFailed(invoice: any) {
+  if (invoice.subscription) {
+    await db.memberSubscription.updateMany({
+      where: { stripeSubscriptionId: invoice.subscription },
+      data: {
+        status: "PAST_DUE",
+      },
+    });
+  }
 }

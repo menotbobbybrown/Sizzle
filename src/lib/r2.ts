@@ -30,6 +30,19 @@ export async function generateUploadUrl(key: string, contentType: string, expire
 }
 
 /**
+ * Upload a buffer directly to R2
+ */
+export async function uploadBufferToR2(key: string, buffer: Buffer, contentType: string): Promise<string> {
+  await s3Client.send(new PutObjectCommand({
+    Bucket: env.R2_BUCKET_NAME,
+    Key: key,
+    Body: buffer,
+    ContentType: contentType,
+  }));
+  return getPublicUrl(key);
+}
+
+/**
  * Generate a presigned URL for R2 storage downloads
  * Uses short expiry and Content-Disposition attachment filename.
  */

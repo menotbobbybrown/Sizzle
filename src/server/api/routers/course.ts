@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { createTRPCRouter, creatorProcedure, protectedProcedure } from "@/server/api/trpc";
 import { TRPCError } from "@trpc/server";
+import { inngest } from "@/lib/inngest";
 
 export const courseRouter = createTRPCRouter({
   createModule: creatorProcedure
@@ -32,7 +33,6 @@ export const courseRouter = createTRPCRouter({
   getCourseContent: protectedProcedure
     .input(z.object({ productId: z.string() }))
     .query(async ({ ctx, input }) => {
-      // Check enrollment
       const enrollment = await ctx.db.enrollment.findUnique({
         where: {
           userId_productId: {
@@ -65,8 +65,8 @@ export const courseRouter = createTRPCRouter({
       lessonId: z.string(),
       completed: z.boolean(),
     }))
-    .mutation(({ ctx, input }) => {
-      return ctx.db.lessonProgress.upsert({
+    .mutation(async ({ ctx, input }) => {
+      const progress = await ctx.db.lessonProgress.upsert({
         where: {
           enrollmentId_lessonId: {
             enrollmentId: input.enrollmentId,
@@ -80,5 +80,39 @@ export const courseRouter = createTRPCRouter({
           completed: input.completed,
         },
       });
+
+      if (input.completed) {
+        const enrollment = await ctx.db.enrollment.findUnique({
+          where: { id: input.enrollmentId },
+          include: { 
+            product: { 
+              include: { 
+                course: { 
+                  include: { 
+                    modules: { include: { lessons: true } } 
+                  } 
+                } 
+              } 
+            },
+            progress: true
+          }
+        });
+
+        if (enrollment?.product.course) {
+          const totalLessons = enrollment.product.course.modules.reduce((acc, m) => acc + m.lessons.length, 0);
+          const completedLessons = enrollment.progress.filter(p => p.completed).length;
+
+          if (completedLessons === totalLessons && !enrollment.completedAt) {
+            await inngest.send({
+              name: "course/completed",
+              data: {
+                enrollmentId: enrollment.id,
+              }
+            });
+          }
+        }
+      }
+
+      return progress;
     }),
 });

@@ -37,6 +37,23 @@ export const env = createEnv({
     // AI (Anthropic Claude)
     ANTHROPIC_API_KEY: z.string().optional(),
 
+    // Inngest
+    INNGEST_EVENT_KEY: z.string().optional(),
+    INNGEST_SIGNING_KEY: z.string().optional(),
+
+    // Upstash (Redis & Ratelimit)
+    UPSTASH_REDIS_REST_URL: z.string().url().optional(),
+    UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
+
+    // Cal.com
+    CALCOM_WEBHOOK_SECRET: z.string().optional(),
+
+    // Social Integrations
+    TIKTOK_CLIENT_ID: z.string().optional(),
+    TIKTOK_CLIENT_SECRET: z.string().optional(),
+    YOUTUBE_API_KEY: z.string().optional(),
+    AES_ENCRYPTION_KEY: z.string().min(32).optional(),
+
     // Cloudflare R2 (file storage)
     R2_ACCOUNT_ID: z.string().min(1),
     R2_ACCESS_KEY_ID: z.string().min(1),
@@ -71,6 +88,15 @@ export const env = createEnv({
     MUX_TOKEN_ID: process.env.MUX_TOKEN_ID,
     MUX_TOKEN_SECRET: process.env.MUX_TOKEN_SECRET,
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    INNGEST_EVENT_KEY: process.env.INNGEST_EVENT_KEY,
+    INNGEST_SIGNING_KEY: process.env.INNGEST_SIGNING_KEY,
+    UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
+    UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
+    CALCOM_WEBHOOK_SECRET: process.env.CALCOM_WEBHOOK_SECRET,
+    TIKTOK_CLIENT_ID: process.env.TIKTOK_CLIENT_ID,
+    TIKTOK_CLIENT_SECRET: process.env.TIKTOK_CLIENT_SECRET,
+    YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY,
+    AES_ENCRYPTION_KEY: process.env.AES_ENCRYPTION_KEY,
     R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID,
     R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
     R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,

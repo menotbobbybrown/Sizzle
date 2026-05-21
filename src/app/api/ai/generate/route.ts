@@ -2,11 +2,26 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
 import { generateWithClaude } from "@/lib/ai/claude";
+import { aiLimiter, checkRateLimit } from "@/lib/ratelimit";
 
 export async function POST(req: Request) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Resolve workspace from user's first membership for rate limiting
+  const membership = await db.workspaceMember.findFirst({
+    where: { userId: session.user.id },
+  });
+
+  const rateLimitKey = membership?.workspaceId ?? session.user.id;
+  const { success } = await checkRateLimit(aiLimiter, `ai:${rateLimitKey}`);
+  if (!success) {
+    return NextResponse.json(
+      { error: "AI rate limit exceeded (20/hour). Please try again later." },
+      { status: 429 }
+    );
   }
 
   try {
@@ -28,16 +43,10 @@ export async function POST(req: Request) {
       );
     }
 
-    // Resolve workspace from user's first membership
-    const membership = await db.workspaceMember.findFirst({
-      where: { userId: session.user.id },
-      include: { workspace: true },
-    });
-
     // Log the generation for audit and quota tracking
     await db.aiGenerationLog.create({
       data: {
-        workspaceId: membership?.workspace.id ?? "unknown",
+        workspaceId: membership?.workspaceId ?? "unknown",
         userId: session.user.id,
         prompt: context,
         result: result.content,

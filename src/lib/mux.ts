@@ -1,70 +1,28 @@
+import Mux from "@mux/mux-node";
 import { env } from "@/env";
 
-type MuxClient = {
-  video: {
-    assets: {
-      create: (params: {
-        input: { url: string };
-        playback_policy: string[];
-        metadata?: Record<string, string>;
-      }) => Promise<{ id: string; playback_ids: Array<{ id: string }>; status: string }>;
-      retrieve: (id: string) => Promise<{
-        id: string;
-        status: string;
-        duration: number;
-        playback_ids: Array<{ id: string }>;
-      }>;
-    };
-    uploads: {
-      create: (params: {
-        new_asset_settings: { playback_policy: string[] };
-        cors_origin: string;
-      }) => Promise<{ id: string; url: string }>;
-    };
-  };
-};
+const mux = new Mux({
+  tokenId: env.MUX_TOKEN_ID!,
+  tokenSecret: env.MUX_TOKEN_SECRET!,
+});
 
-let muxClient: MuxClient | null = null;
-
-function createMuxClient(): MuxClient | null {
-  if (!env.MUX_TOKEN_ID || !env.MUX_TOKEN_SECRET) {
-    return null;
-  }
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Mux = require("@mux/mux-node");
-    const { video } = new Mux({
-      tokenId: env.MUX_TOKEN_ID,
-      tokenSecret: env.MUX_TOKEN_SECRET,
-    });
-    return { video };
-  } catch {
-    return null;
-  }
-}
-
-export function getMux(): MuxClient | null {
-  if (!muxClient) {
-    muxClient = createMuxClient();
-  }
-  return muxClient;
-}
+export const video = mux.video;
 
 export async function createMuxUpload(corsOrigin: string) {
-  const mux = getMux();
-  if (!mux) {
-    return null;
-  }
-  return mux.video.uploads.create({
-    new_asset_settings: { playback_policy: ["public"] },
+  return video.uploads.create({
+    new_asset_settings: { 
+      playback_policy: ["signed"],
+    },
     cors_origin: corsOrigin,
   });
 }
 
-export async function getMuxAssetStatus(assetId: string) {
-  const mux = getMux();
-  if (!mux) {
-    return null;
-  }
-  return mux.video.assets.retrieve(assetId);
+export async function generatePlaybackToken(playbackId: string) {
+  return mux.jwt.sign(playbackId, {
+    type: "video_playback_id",
+  });
+}
+
+export async function getAsset(assetId: string) {
+  return video.assets.retrieve(assetId);
 }

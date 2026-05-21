@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { createTRPCRouter, publicProcedure, protectedProcedure } from "@/server/api/trpc";
+import { createTRPCRouter, publicProcedure } from "@/server/api/trpc";
 import { stripe } from "@/lib/stripe";
 import { env } from "@/env";
 import { TRPCError } from "@trpc/server";
+import { checkoutLimiter, checkRateLimit } from "@/lib/ratelimit";
 
 export const checkoutRouter = createTRPCRouter({
   /**
@@ -13,12 +14,26 @@ export const checkoutRouter = createTRPCRouter({
       z.object({
         productId: z.string(),
         discountCode: z.string().optional(),
+        customAmount: z.number().optional(),
+        affiliateCode: z.string().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const ip = ctx.req.headers.get("x-forwarded-for") ?? "127.0.0.1";
+      const { success } = await checkRateLimit(checkoutLimiter, ip);
+      if (!success) {
+        throw new TRPCError({ 
+          code: "TOO_MANY_REQUESTS", 
+          message: "Too many checkout attempts. Please try again in a minute." 
+        });
+      }
+
       const product = await ctx.db.product.findUnique({
         where: { id: input.productId },
-        include: { workspace: true },
+        include: { 
+          workspace: true,
+          membershipConfig: true,
+        },
       });
 
       if (!product || product.status !== "PUBLISHED") {
@@ -34,8 +49,21 @@ export const checkoutRouter = createTRPCRouter({
 
       let unitAmount = Math.round(Number(product.price) * 100);
 
-      // Apply discount if provided
-      if (input.discountCode) {
+      // PWYW pricing
+      if (product.pricingType === "PWYW") {
+        const amount = Number(input.customAmount);
+        const minPrice = Number(product.minPrice) || 0;
+        if (isNaN(amount) || amount < minPrice) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Minimum price is ${minPrice}`,
+          });
+        }
+        unitAmount = Math.round(amount * 100);
+      }
+
+      // Apply discount if provided (only for fixed price products usually, but let's allow it)
+      if (input.discountCode && product.pricingType !== "PWYW") {
         const discount = await ctx.db.discountCode.findUnique({
           where: { code: input.discountCode.toUpperCase() },
         });
@@ -55,6 +83,7 @@ export const checkoutRouter = createTRPCRouter({
         }
       }
 
+      const isSubscription = product.type === "MEMBERSHIP";
       const successUrl = `${env.NEXT_PUBLIC_APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}&product=${product.slug}`;
       const cancelUrl = `${env.NEXT_PUBLIC_APP_URL}/store/${product.workspace.handle}/p/${product.slug}?canceled=true`;
 
@@ -68,24 +97,42 @@ export const checkoutRouter = createTRPCRouter({
                 images: product.imageUrl ? [product.imageUrl] : [],
               },
               unit_amount: unitAmount,
+              ...(isSubscription && product.membershipConfig ? {
+                recurring: {
+                  interval: product.membershipConfig.interval.toLowerCase() as any,
+                }
+              } : {}),
             },
             quantity: 1,
           },
         ],
-        mode: "payment",
+        mode: isSubscription ? "subscription" : "payment",
         success_url: successUrl,
         cancel_url: cancelUrl,
         customer_email: ctx.session?.user?.email ?? undefined,
-        payment_intent_data: {
+        ...(isSubscription ? {} : {
+          payment_intent_data: {
+            transfer_data: {
+              destination: product.workspace.stripeAccountId,
+            },
+          },
+        }),
+        subscription_data: isSubscription ? {
           transfer_data: {
             destination: product.workspace.stripeAccountId,
           },
-        },
+          metadata: {
+            productId: product.id,
+            workspaceId: product.workspace.id,
+            userId: ctx.session?.user?.id ?? "",
+          }
+        } : undefined,
         metadata: {
           productId: product.id,
           workspaceId: product.workspace.id,
           userId: ctx.session?.user?.id ?? "",
           discountCode: input.discountCode ?? "",
+          affiliateCode: input.affiliateCode || "",
         },
       });
 
@@ -200,7 +247,6 @@ export const checkoutRouter = createTRPCRouter({
             name: item.product.name,
             type: item.product.type,
           })),
-          accessUrl: `${env.NEXT_PUBLIC_APP_URL}/download/${session.metadata?.accessToken ?? ""}`,
           customerEmail: session.customer_email,
         };
       } catch (error) {
