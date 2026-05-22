@@ -6,10 +6,19 @@ A full-featured creator commerce platform built with Next.js 15, tRPC, Prisma, a
 
 - **Creator Storefronts**: Custom storefronts at `/{handle}` (e.g., `/johndoe`)
 - **Digital Products**: Sell courses, digital downloads, and freebies
+- **Coaching Products**: Cal.com integration for booking sessions
+- **Membership Products**: Recurring subscriptions with Stripe
+- **Pay-What-You-Want**: Flexible pricing with minimum and suggested amounts
 - **Stripe Integration**: Full payment processing with webhooks
 - **Email Marketing**: Built-in subscriber management and campaigns
 - **Analytics Dashboard**: Track revenue, orders, and engagement
 - **AI Tools**: Content generation powered by Claude
+- **Affiliate Program**: Track referrals and commission
+- **Social Media Integration**: TikTok, YouTube, Instagram
+- **Course Certificates**: PDF generation on completion
+- **Video Pipeline**: Mux integration for video hosting
+- **Background Jobs**: Inngest for async processing
+- **Rate Limiting**: Upstash Redis rate limiting
 
 ## Tech Stack
 
@@ -21,6 +30,10 @@ A full-featured creator commerce platform built with Next.js 15, tRPC, Prisma, a
 - **Payments**: Stripe
 - **Email**: Resend + React Email
 - **Styling**: Tailwind CSS + shadcn/ui
+- **Background Jobs**: Inngest
+- **Rate Limiting**: Upstash Redis
+- **Video**: Mux
+- **Storage**: Cloudflare R2
 
 ## Prerequisites
 
@@ -28,6 +41,8 @@ A full-featured creator commerce platform built with Next.js 15, tRPC, Prisma, a
 - PostgreSQL 14+
 - Stripe account
 - Resend account (for email)
+- Upstash Redis (for rate limiting)
+- Inngest account (for background jobs)
 
 ## Setup
 
@@ -56,6 +71,14 @@ Required variables:
 - `RESEND_API_KEY` - Resend API key
 - `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` - Stripe publishable key
 
+Optional variables for Part 2 features:
+- `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` - Rate limiting
+- `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` - Background jobs
+- `CALCOM_WEBHOOK_SECRET` - Booking webhooks
+- `TIKTOK_CLIENT_KEY` / `TIKTOK_CLIENT_SECRET` - TikTok OAuth
+- `YOUTUBE_API_KEY` - YouTube stats
+- `ENCRYPTION_KEY` - OAuth token encryption
+
 ### 3. Database Setup
 
 ```bash
@@ -81,6 +104,33 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+### 6. Inngest Dev Server (Background Jobs)
+
+For local development with Inngest background jobs:
+
+```bash
+# Install Inngest CLI
+npm install -g inngest
+
+# Run Inngest alongside Next.js
+npx inngest dev
+```
+
+This will forward Inngest events to `http://localhost:4000` by default.
+
+### 7. Webhook Forwarding
+
+Use tools like ngrok or Cloudflare Tunnels for local webhook testing:
+
+```bash
+# Stripe
+stripe listen --forward-to localhost:3000/api/webhooks/stripe
+
+# Mux
+ngrok http 3000 --subdomain my-app
+# Then configure Mux webhook to point to your ngrok URL
+```
 
 ## Routes
 
@@ -116,6 +166,7 @@ Open [http://localhost:3000](http://localhost:3000).
 | `/dashboard/courses` | Course builder |
 | `/dashboard/campaigns` | Email campaigns |
 | `/dashboard/subscribers` | Subscriber management |
+| `/dashboard/settings` | Settings & integrations |
 
 ### Admin Routes
 | Route | Description |
@@ -144,6 +195,27 @@ stripe listen --forward-to localhost:3000/api/webhooks/stripe
 
 Copy the webhook signing secret output by the command and set it as `STRIPE_WEBHOOK_SECRET`.
 
+### Cal.com Webhooks
+
+1. Go to Cal.com → Settings → Webhooks
+2. Add webhook URL: `https://your-domain.com/api/webhooks/cal`
+3. Set secret: `CALCOM_WEBHOOK_SECRET`
+4. Subscribe to events:
+   - `BOOKING_CREATED`
+   - `BOOKING_CANCELLED`
+   - `BOOKING_COMPLETED`
+   - `BOOKING_RESCHEDULED`
+
+### Mux Webhooks
+
+1. Go to Mux → Settings → Webhooks
+2. Add webhook URL: `https://your-domain.com/api/webhooks/mux`
+3. Set signing secret: `MUX_TOKEN_SECRET`
+4. Subscribe to events:
+   - `video.asset.ready`
+   - `video.asset.errored`
+   - `video.upload.asset_created`
+
 ### Testing Checkout Flow
 
 1. Start the dev server: `npm run dev`
@@ -151,14 +223,6 @@ Copy the webhook signing secret output by the command and set it as `STRIPE_WEBH
 3. Visit the product page and click "Buy"
 4. Use Stripe test card: `4242 4242 4242 4242`
 5. Check the order in dashboard and webhook logs
-
-### Mux Webhooks (Video)
-
-```bash
-stripe listen --forward-to localhost:3000/api/webhooks/mux
-```
-
-Note: Mux webhooks require additional configuration for video processing.
 
 ## API Routes
 
@@ -177,6 +241,7 @@ All API operations use tRPC. Available routers:
 - `subscriber` - Email subscribers
 - `campaign` - Email campaigns
 - `discountCode` - Discount codes
+- `affiliate` - Affiliate link management
 
 ### API Routes (Server-side)
 
@@ -189,26 +254,64 @@ All API operations use tRPC. Available routers:
 | `/api/webhooks/cal` | POST | Cal.com booking events |
 | `/api/access/{token}` | GET | Secure file delivery |
 | `/api/ai/generate` | POST | AI content generation |
+| `/api/inngest` | * | Inngest webhook handler |
+| `/api/integrations/tiktok` | GET | TikTok OAuth start |
+| `/api/integrations/tiktok/callback` | GET | TikTok OAuth callback |
+| `/api/integrations/youtube` | GET | YouTube stats |
 
 ## Pricing Configuration
 
-The pricing system supports two modes (configured via `PRICING_MODE` env):
+### Product Pricing Types
 
-### Single Plan (Default - Phase 1)
-- $5/month flat rate
-- Everything included
-- No transaction fees
+The platform supports multiple pricing models:
 
-### Tiered Plans (Future)
-- Starter: $29/month
-- Creator: $79/month
-- Pro: $149/month
+- **Fixed** (default) - Set price for all customers
+- **PWYW (Pay-What-You-Want)** - Customers choose amount
+  - `minPrice` - Minimum acceptable amount
+  - `suggestedPrice` - Suggested price shown to customers
+- **Free** - No payment required
 
-Toggle between modes:
-```bash
-PRICING_MODE=single  # Default
-PRICING_MODE=tiered   # For future phases
-```
+### Subscription Products
+
+Membership products with recurring billing:
+- Daily, weekly, monthly, or yearly intervals
+- Automatic renewal handling via Stripe
+- Failed payment notifications
+
+## Affiliate Program
+
+### Creating Affiliate Links
+
+1. Go to Dashboard → Settings → Affiliates
+2. Create new link with custom code and commission rate
+3. Share link: `https://your-store.com?ref=CODE`
+
+### Tracking Attribution
+
+- Clicks are tracked via URL parameter
+- Conversions attributed when order is placed
+- Commission calculated on order amount
+
+## Social Media Integration
+
+### TikTok
+
+1. Go to Dashboard → Settings → Social
+2. Click "Connect TikTok"
+3. Authorize in TikTok OAuth flow
+4. Stats displayed on storefront
+
+### YouTube
+
+1. Go to Dashboard → Settings → Social
+2. Enter your YouTube channel ID
+3. Stats fetched via YouTube Data API
+
+### Instagram
+
+**Note**: Instagram Graph API requires app review. See `docs/instagram-setup.md` for details.
+
+Instagram integration is planned for future release after app review approval.
 
 ## Folder Structure
 
@@ -220,6 +323,10 @@ src/
 │   ├── (dashboard)/        # Dashboard pages
 │   ├── admin/              # Admin pages
 │   ├── api/                # API routes
+│   │   ├── integrations/   # OAuth integrations
+│   │   ├── inngest/        # Background jobs
+│   │   ├── storefront/     # Public storefront APIs
+│   │   └── webhooks/       # Webhook handlers
 │   ├── checkout/           # Checkout flow
 │   ├── download/           # Download access
 │   └── *.tsx               # Marketing pages
@@ -227,17 +334,22 @@ src/
 │   ├── charts/            # Dashboard charts
 │   ├── course-builder/     # Course editor
 │   ├── design-editor/      # Theme editor
-│   └── editor/             # Rich text editor
-├── config/                 # App configuration
-│   ├── pricing.ts          # Pricing settings
-│   └── route-map.ts       # Route constants
+│   └── storefront/         # Storefront components
 ├── emails/                 # React Email templates
+├── inngest/                # Background job functions
+│   └── functions/          # Inngest event handlers
 ├── lib/                    # Utilities & integrations
 │   ├── auth.ts             # NextAuth config
 │   ├── db.ts               # Prisma client
 │   ├── stripe.ts           # Stripe client
 │   ├── email.ts            # Email sender
-│   └── r2.ts               # R2 storage helper
+│   ├── r2.ts               # R2 storage helper
+│   ├── mux.ts              # Mux video client
+│   ├── pusher.ts           # Real-time notifications
+│   ├── inngest.ts          # Inngest client
+│   ├── ratelimit.ts        # Rate limiting
+│   ├── encryption.ts       # Token encryption
+│   └── certificates.ts     # PDF certificate generation
 ├── server/
 │   ├── api/
 │   │   ├── routers/        # tRPC routers
@@ -264,13 +376,16 @@ All API operations go through tRPC with procedures categorized by auth level:
 1. **Public Routes**: Fetch data directly from Prisma in Server Components
 2. **Dashboard**: Use tRPC with React Query for client-side data
 3. **Webhooks**: Standalone API routes for Stripe/Mux/Cal events
+4. **Background Jobs**: Heavy work offloaded to Inngest functions
 
-### Middleware
+### Background Job Flow
 
-The middleware handles:
-- `@handle` URL rewriting to `/store/[handle]`
-- Reserved handle protection
-- Handle format validation
+Post-purchase events flow through Inngest for:
+- Email delivery (with retries)
+- Analytics updates
+- Subscriber upserts
+- Real-time notifications
+- Social proof updates
 
 ## Development
 
@@ -292,6 +407,12 @@ npm run lint
 npm run build
 ```
 
+### Running Tests
+
+```bash
+npm test
+```
+
 ### Database Commands
 
 ```bash
@@ -307,13 +428,6 @@ npx prisma studio
 # Reset database
 npx prisma migrate reset
 ```
-
-## Known Issues
-
-1. **Stripe Connect**: Full Stripe Connect OAuth flow is not yet implemented
-2. **Video Processing**: Mux integration is in placeholder state
-3. **Course Builder**: Module/Lesson CRUD is stubbed
-4. **Email Templates**: Some templates need styling polish
 
 ## License
 

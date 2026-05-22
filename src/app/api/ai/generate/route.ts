@@ -2,8 +2,17 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
 import { generateWithClaude } from "@/lib/ai/claude";
+import { aiLimiter, checkRateLimit } from "@/lib/ratelimit";
 
 export async function POST(req: Request) {
+  // Apply rate limiting
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0] || "127.0.0.1";
+  const rateLimitResponse = await checkRateLimit(aiLimiter, ip);
+  
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
+
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

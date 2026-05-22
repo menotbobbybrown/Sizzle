@@ -106,6 +106,16 @@ model Workspace {
   // Analytics aggregates
   analytics AnalyticsDaily[]
 
+  // Social connections
+  socialConnections SocialConnection[]
+
+  // Recent sales for social proof
+  recentSales RecentSale[]
+
+  // Affiliate program
+  affiliateLinks   AffiliateLink[]
+  affiliatePayouts AffiliatePayout[]
+
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   discountCodes DiscountCode[]
@@ -229,10 +239,20 @@ model Product {
   status      ProductStatus @default(DRAFT)
   imageUrl    String?
 
+  // PWYW pricing
+  pricingType    PricingType @default(FIXED)
+  minPrice       Decimal?    @db.Decimal(10, 2)
+  suggestedPrice Decimal?    @db.Decimal(10, 2)
+
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Sub-type relations
-  course Course?
+  course           Course?
+  coachingConfig   CoachingConfig?
+  membershipConfig MembershipConfig?
+
+  // Member subscriptions (for membership products)
+  memberSubscriptions MemberSubscription[]
 
   enrollments  Enrollment[]
   orderItems   OrderItem[]
@@ -252,12 +272,168 @@ enum ProductType {
   DIGITAL
   COURSE
   FREEBIE
+  COACHING
+  MEMBERSHIP
 }
 
 enum ProductStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
+}
+
+enum PricingType {
+  FIXED
+  PWYW
+  FREE
+}
+
+// ─── Coaching Configuration ──────────────────────────────────────────────────
+
+model CoachingConfig {
+  id        String  @id @default(cuid())
+  productId String  @unique
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Cal.com event type ID for booking
+  calEventTypeId String?
+
+  // Session details
+  sessionDuration Int     @default(60) // minutes
+  sessionPrice    Decimal @db.Decimal(10, 2)
+
+  // Description and requirements
+  description  String? @db.Text
+  requirements String? @db.Text
+  included     String? @db.Text // JSON array of included items
+
+  // Metadata
+  metadata Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Membership Interval ────────────────────────────────────────────────
+
+enum MembershipInterval {
+  DAY
+  WEEK
+  MONTH
+  YEAR
+}
+
+// ─── Membership Configuration ────────────────────────────────────────────────
+
+model MembershipConfig {
+  id        String  @id @default(cuid())
+  productId String  @unique
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Billing interval
+  interval      MembershipInterval?
+  intervalCount Int                 @default(1)
+
+  // Features
+  features    String? @db.Text // JSON array of included features
+  description String? @db.Text
+
+  // Cancellation policy
+  cancelBeforeEnd Boolean @default(true)
+
+  metadata Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Membership Subscriptions ────────────────────────────────────────────────
+
+model MemberSubscription {
+  id        String  @id @default(cuid())
+  userId    String
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  status SubscriptionStatus @default(ACTIVE)
+
+  // Stripe subscription ID
+  stripeSubscriptionId String? @unique
+
+  // Billing
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean  @default(false)
+
+  // Metadata
+  metadata Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@index([productId])
+  @@index([status])
+  @@index([currentPeriodEnd])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+}
+
+// ─── Bookings ────────────────────────────────────────────────────────────────
+
+model Booking {
+  id        String  @id @default(cuid())
+  productId String
+  userId    String?
+
+  // Cal.com data
+  calEventId     String? @unique
+  calEventTypeId String?
+
+  // Customer info
+  customerEmail    String
+  customerName     String?
+  customerTimezone String?
+
+  // Timing
+  startTime DateTime
+  endTime   DateTime
+
+  // Order linking (for paid coaching)
+  orderId String?
+  order   Order?  @relation(fields: [orderId], references: [id])
+
+  // Status
+  status       BookingStatus @default(CONFIRMED)
+  cancelledAt  DateTime?
+  cancelReason String?
+
+  // Metadata
+  metadata Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@index([userId])
+  @@index([status])
+  @@index([startTime])
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
 }
 
 // ─── Discount Codes ────────────────────────────────────────────────────────────
@@ -392,6 +568,13 @@ model Order {
   accessTokens AccessToken[]
   emails       EmailLog[]
 
+  // Affiliate tracking
+  affiliateLinkId String?
+  affiliateLink   AffiliateLink? @relation(fields: [affiliateLinkId], references: [id])
+
+  // Bookings linked to this order
+  bookings Booking[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -401,6 +584,7 @@ model Order {
   @@index([stripeSessionId])
   @@index([userId])
   @@index([discountCodeId])
+  @@index([affiliateLinkId])
 }
 
 model OrderItem {
@@ -453,15 +637,18 @@ enum PaymentStatus {
 // ─── Webhook Events (idempotency) ────────────────────────────────────────────
 
 model WebhookEvent {
-  id            String             @id @default(cuid())
-  stripeEventId String             @unique
-  type          String
-  status        WebhookEventStatus @default(PENDING)
-  processedAt   DateTime?
+  id          String             @id @default(cuid())
+  eventId     String             @unique // External event ID (Stripe, Cal.com, etc.)
+  source      String // "stripe", "calcom", "mux"
+  type        String
+  status      WebhookEventStatus @default(PENDING)
+  payload     Json               @default("{}")
+  processedAt DateTime?
+  error       String?
 
   createdAt DateTime @default(now())
 
-  @@index([stripeEventId])
+  @@index([eventId, source])
   @@index([status])
 }
 
@@ -530,6 +717,13 @@ model Enrollment {
   userId    String
   productId String
   status    EnrollmentStatus @default(ACTIVE)
+
+  // Certificate
+  certificateUrl String?
+  completedAt    DateTime?
+
+  // Progress percentage
+  progressPercent Int @default(0)
 
   user    User    @relation(fields: [userId], references: [id])
   product Product @relation(fields: [productId], references: [id])
@@ -795,4 +989,161 @@ model Notification {
 
   @@index([userId, readAt])
   @@index([userId, createdAt])
+}
+
+// ─── Recent Sales (Social Proof) ─────────────────────────────────────────────
+
+model RecentSale {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // Anonymized buyer info
+  buyerName   String // e.g., "John D." or just "John"
+  productName String
+
+  // Amount (optional, for "X spent $Y" style)
+  amount   Decimal? @db.Decimal(10, 2)
+  currency String?  @default("USD")
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([createdAt])
+}
+
+// ─── Social Connections ───────────────────────────────────────────────────────
+
+model SocialConnection {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  platform SocialPlatform
+  status   ConnectionStatus @default(DISCONNECTED)
+
+  // OAuth tokens (encrypted at rest)
+  accessToken  String? // Encrypted
+  refreshToken String? // Encrypted
+  expiresAt    DateTime?
+
+  // Platform-specific data
+  platformUserId   String?
+  platformUsername String?
+
+  // YouTube-specific
+  channelId       String?
+  subscriberCount Int?
+
+  // Metadata
+  metadata Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workspaceId, platform])
+  @@index([workspaceId])
+}
+
+enum SocialPlatform {
+  TIKTOK
+  YOUTUBE
+  INSTAGRAM
+}
+
+enum ConnectionStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+  PENDING_REVIEW
+}
+
+// ─── Affiliate Program ────────────────────────────────────────────────────────
+
+model AffiliateLink {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // User who owns this link
+  userId String?
+
+  // The code used in URLs (?ref=CODE)
+  code String @unique
+
+  // Link settings
+  name       String?
+  commission Decimal @default(10) @db.Decimal(5, 2) // Percentage
+  isActive   Boolean @default(true)
+
+  // Stats
+  clickCount      Int @default(0)
+  conversionCount Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders Order[]
+  clicks AffiliateClick[]
+
+  @@index([workspaceId])
+  @@index([code])
+}
+
+model AffiliateClick {
+  id     String        @id @default(cuid())
+  linkId String
+  link   AffiliateLink @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  // Attribution
+  ipAddress String?
+  userAgent String?
+
+  // UTM parameters
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+
+  createdAt DateTime @default(now())
+
+  @@index([linkId])
+  @@index([createdAt])
+}
+
+model AffiliatePayout {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  userId String
+
+  // Amounts
+  grossAmount Decimal @db.Decimal(10, 2)
+  commission  Decimal @db.Decimal(10, 2)
+  netAmount   Decimal @db.Decimal(10, 2)
+
+  // Status
+  status PayoutStatus @default(PENDING)
+
+  // Stripe payout
+  stripePayoutId String?
+  paidAt         DateTime?
+
+  // Period covered
+  periodStart DateTime
+  periodEnd   DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([status])
+}
+
+enum PayoutStatus {
+  PENDING
+  APPROVED
+  PAID
+  FAILED
 }
