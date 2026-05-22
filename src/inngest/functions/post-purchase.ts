@@ -45,6 +45,7 @@ export const postPurchaseFlow = inngest.createFunction(
       });
       
       // Create enrollment for course products
+      // Only for authenticated users - guests access via AccessToken-based path
       if (product.type === "COURSE" && userId) {
         await db.enrollment.upsert({
           where: {
@@ -61,8 +62,10 @@ export const postPurchaseFlow = inngest.createFunction(
           },
         });
       }
+      // For guest course purchases, access is provided via AccessToken link
+      // No user enrollment is created, but the token grants access to course content
       
-      return { tokenCreated: true, enrollmentCreated: product.type === "COURSE" };
+      return { tokenCreated: true, enrollmentCreated: product.type === "COURSE" && !!userId };
     });
     
     // Step 2: Send purchase email (retryable)
@@ -563,4 +566,3 @@ export const inngestFunctions = [
   subscriptionCancelledFlow,
   courseCompletedFlow,
   stripeWebhookHandler,
-];
