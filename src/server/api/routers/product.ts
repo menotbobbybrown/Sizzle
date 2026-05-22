@@ -324,4 +324,52 @@ export const productRouter = createTRPCRouter({
         totalEnrollments: enrollments,
       };
     }),
-});
+
+  /**
+   * Save fileKey metadata after client upload
+   * Called by client after successful upload to R2
+   */
+  saveFileKey: creatorProcedure
+    .input(
+      z.object({
+        productId: z.string(),
+        fileKey: z.string(),
+        fileName: z.string().optional(),
+        fileSize: z.number().optional(),
+        fileType: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Validate product belongs to current workspace
+      const product = await ctx.db.product.findUnique({
+        where: { id: input.productId, workspaceId: ctx.workspace.id },
+      });
+
+      if (!product) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Product not found" });
+      }
+
+      // Persist file metadata fields on Product
+      const updatedProduct = await ctx.db.product.update({
+        where: { id: input.productId },
+        data: {
+          fileKey: input.fileKey,
+          fileName: input.fileName,
+          fileSize: input.fileSize,
+          fileType: input.fileType,
+        },
+      });
+
+      // Revalidate product cache
+      revalidateTag(`product-${ctx.workspace.handle}-${product.slug}`);
+      await cache.invalidateProduct(ctx.workspace.handle, product.slug);
+
+      return {
+        success: true,
+        productId: input.productId,
+        fileKey: input.fileKey,
+      };
+    }),
+});/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('

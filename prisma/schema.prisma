@@ -251,6 +251,16 @@ model Product {
   minPrice       Decimal?    @db.Decimal(10, 2)
   suggestedPrice Decimal?    @db.Decimal(10, 2)
 
+  // File delivery
+  fileKey   String?
+  fileName  String?
+  fileSize  Int?
+  fileType  String?
+
+  // Product listing order
+  featured  Boolean @default(false)
+  sortOrder Int     @default(0)
+
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Sub-type relations
@@ -748,7 +758,6 @@ model Enrollment {
 
   // Progress percentage
   progressPercent Int @default(0)
-  progress        Int @default(0)
 
   user    User    @relation(fields: [userId], references: [id])
   product Product @relation(fields: [productId], references: [id])
@@ -759,6 +768,8 @@ model Enrollment {
   updatedAt DateTime @updatedAt
 
   @@unique([userId, productId])
+  @@index([userId])
+  @@index([productId])
 }
 
 enum EnrollmentStatus {

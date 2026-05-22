@@ -10,26 +10,30 @@ import { getWorkspaceEntitlements } from "@/lib/entitlements";
 export const createTRPCContext = async (opts: { req: NextRequest }) => {
   const session = await auth();
 
-  // Resolve workspace from header or first workspace for logged-in users
+  // SECURITY: Authenticated requests must resolve workspace from user membership only.
+  // We never trust x-workspace-handle header for authenticated users to prevent spoofing.
   let workspace = null;
   let entitlements = null;
 
-  // Try to get workspace from header (for public storefront routes)
-  const workspaceHandle = opts.req.headers.get("x-workspace-handle");
-  if (workspaceHandle) {
-    workspace = await db.workspace.findUnique({
-      where: { handle: workspaceHandle },
-    });
-  }
-
-  // If no workspace from header, get the user's first workspace
-  if (!workspace && session?.user?.id) {
+  // For authenticated users, resolve workspace from their membership
+  if (session?.user?.id) {
     const membership = await db.workspaceMember.findFirst({
       where: { userId: session.user.id },
       include: { workspace: true },
       orderBy: { createdAt: "asc" },
     });
     workspace = membership?.workspace ?? null;
+  }
+
+  // For unauthenticated/public requests only, allow workspace lookup from header
+  // This is safe because unauthenticated users cannot perform protected actions
+  if (!workspace && !session?.user?.id) {
+    const workspaceHandle = opts.req.headers.get("x-workspace-handle");
+    if (workspaceHandle) {
+      workspace = await db.workspace.findUnique({
+        where: { handle: workspaceHandle },
+      });
+    }
   }
 
   if (workspace) {
@@ -115,7 +119,3 @@ export const creatorProcedure = protectedProcedure.use(async ({ ctx, next }) => 
  */
 export const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.session.user.role !== "ADMIN") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
-  }
-  return next({ ctx });
-});
