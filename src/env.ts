@@ -46,6 +46,27 @@ export const env = createEnv({
 
     // App URL
     APP_URL: z.string().url().default("http://localhost:3000"),
+
+    // Upstash Rate Limiting
+    UPSTASH_REDIS_REST_URL: z.string().optional(),
+    UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
+
+    // Cal.com Webhooks
+    CALCOM_WEBHOOK_SECRET: z.string().optional(),
+
+    // Inngest (background jobs)
+    INNGEST_EVENT_KEY: z.string().optional(),
+    INNGEST_SIGNING_KEY: z.string().optional(),
+
+    // TikTok OAuth
+    TIKTOK_CLIENT_KEY: z.string().optional(),
+    TIKTOK_CLIENT_SECRET: z.string().optional(),
+
+    // YouTube API
+    YOUTUBE_API_KEY: z.string().optional(),
+
+    // Encryption key for OAuth tokens (AES-256)
+    ENCRYPTION_KEY: z.string().min(32).optional(),
   },
   client: {
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: z.string().min(1),
@@ -81,6 +102,15 @@ export const env = createEnv({
     NEXT_PUBLIC_PUSHER_KEY: process.env.NEXT_PUBLIC_PUSHER_KEY,
     NEXT_PUBLIC_PUSHER_CLUSTER: process.env.NEXT_PUBLIC_PUSHER_CLUSTER,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+    UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
+    UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
+    CALCOM_WEBHOOK_SECRET: process.env.CALCOM_WEBHOOK_SECRET,
+    INNGEST_EVENT_KEY: process.env.INNGEST_EVENT_KEY,
+    INNGEST_SIGNING_KEY: process.env.INNGEST_SIGNING_KEY,
+    TIKTOK_CLIENT_KEY: process.env.TIKTOK_CLIENT_KEY,
+    TIKTOK_CLIENT_SECRET: process.env.TIKTOK_CLIENT_SECRET,
+    YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY,
+    ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
   },
   skipValidation: !!process.env.SKIP_ENV_VALIDATION,
 });

@@ -3,6 +3,7 @@ import { createTRPCRouter, publicProcedure, protectedProcedure } from "@/server/
 import { stripe } from "@/lib/stripe";
 import { env } from "@/env";
 import { TRPCError } from "@trpc/server";
+import { checkoutLimiter, checkRateLimit } from "@/lib/ratelimit";
 
 export const checkoutRouter = createTRPCRouter({
   /**
@@ -13,9 +14,21 @@ export const checkoutRouter = createTRPCRouter({
       z.object({
         productId: z.string(),
         discountCode: z.string().optional(),
+        customAmount: z.number().optional(), // For PWYW products
       })
     )
     .mutation(async ({ ctx, input }) => {
+      // Apply rate limiting
+      const ip = ctx.headers?.get("x-forwarded-for")?.split(",")[0] || "127.0.0.1";
+      const rateLimitResponse = await checkRateLimit(checkoutLimiter, ip);
+      
+      if (rateLimitResponse) {
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: "Rate limit exceeded. Please try again later.",
+        });
+      }
+
       const product = await ctx.db.product.findUnique({
         where: { id: input.productId },
         include: { workspace: true },
@@ -32,7 +45,37 @@ export const checkoutRouter = createTRPCRouter({
         });
       }
 
-      let unitAmount = Math.round(Number(product.price) * 100);
+      // Validate custom amount for PWYW products
+      if (input.customAmount !== undefined) {
+        if (product.pricingType === "PWYW") {
+          const minPrice = product.minPrice ? Number(product.minPrice) : 1;
+          if (input.customAmount < minPrice) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `Minimum price is $${minPrice}`,
+            });
+          }
+        } else if (product.pricingType === "FREE") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This product is free",
+          });
+        }
+      }
+
+      let unitAmount: number;
+      
+      // Determine price based on pricing type
+      if (product.pricingType === "PWYW" && input.customAmount) {
+        unitAmount = Math.round(input.customAmount * 100);
+      } else if (product.pricingType === "FREE") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This product is free - no payment needed",
+        });
+      } else {
+        unitAmount = Math.round(Number(product.price) * 100);
+      }
 
       // Apply discount if provided
       if (input.discountCode) {
@@ -86,6 +129,8 @@ export const checkoutRouter = createTRPCRouter({
           workspaceId: product.workspace.id,
           userId: ctx.session?.user?.id ?? "",
           discountCode: input.discountCode ?? "",
+          pricingType: product.pricingType,
+          customAmount: input.customAmount?.toString() ?? "",
         },
       });
 

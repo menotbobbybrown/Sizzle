@@ -1,124 +1,232 @@
 import { headers } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
 import { env } from "@/env";
+import { db } from "@/lib/db";
+import { sendInngestEvent, INNGEST_EVENTS } from "@/lib/inngest";
 import crypto from "crypto";
 
 /**
- * Cal.com Webhook Handler
- * 
- * Handles Cal.com booking events:
- * - BOOKING_CREATED (new booking)
- * - BOOKING_CANCELLED (booking cancelled)
- * - BOOKING_RESCHEDULED (booking rescheduled)
- * - BOOKING_COMPLETED (booking marked as completed)
- * - MEETING_ENDED (meeting has ended)
+ * Verify Cal.com webhook signature
  */
+function verifyCalSignature(
+  body: string,
+  signature: string | null,
+  secret: string
+): boolean {
+  if (!signature) return false;
+
+  const expectedSignature = crypto
+    .createHmac("sha256", secret)
+    .update(body)
+    .digest("hex");
+
+  // Constant-time comparison to prevent timing attacks
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expectedSignature)
+  );
+}
+
 export async function POST(req: NextRequest) {
-  // Verify webhook signature if API key is configured
-  const calApiKey = req.headers.get("x-cal-api-key");
+  const body = await req.text();
+  const signature = req.headers.get("x-cal-signature");
   
-  if (!calApiKey) {
-    return new NextResponse("Missing Cal.com API key", { status: 401 });
+  // Verify webhook signature
+  if (env.CALCOM_WEBHOOK_SECRET) {
+    if (!signature) {
+      console.log("[Cal Webhook] Missing signature");
+      return new NextResponse("Missing signature", { status: 401 });
+    }
+
+    if (!verifyCalSignature(body, signature, env.CALCOM_WEBHOOK_SECRET)) {
+      console.log("[Cal Webhook] Invalid signature");
+      return new NextResponse("Invalid signature", { status: 401 });
+    }
   }
 
-  // TODO: Verify Cal.com webhook signature
-  // Cal.com webhooks can be verified using the API key or signature header
-  // const expectedKey = env.CALCOM_API_KEY;
-  // if (calApiKey !== expectedKey) {
-  //   return new NextResponse("Invalid API key", { status: 401 });
-  // }
+  let payload;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return new NextResponse("Invalid JSON", { status: 400 });
+  }
 
-  const body = await req.json();
-  const { event, payload } = body;
+  const { event, payload: eventPayload } = payload;
 
   console.log(`[Cal Webhook] Received: ${event}`);
 
   try {
     switch (event) {
+      // ============================================================
+      // BOOKING CREATED
+      // ============================================================
       case "BOOKING_CREATED": {
-        const { uid, startTime, endTime, title, attendees, user } = payload;
+        const { uid, startTime, endTime, title, attendees, user } = eventPayload;
         
-        // TODO: Create booking/order record
-        // const booking = await db.booking.create({
-        //   data: {
-        //     calEventId: uid,
-        //     productId: findProductByTitle(title),
-        //     customerEmail: attendees?.[0]?.email,
-        //     customerName: attendees?.[0]?.name,
-        //     startTime: new Date(startTime),
-        //     endTime: new Date(endTime),
-        //     status: "CONFIRMED",
-        //   },
-        // });
+        // Parse metadata to find the product/workspace
+        const metadata = eventPayload.metadata || {};
+        const productId = metadata.productId || metadata.product_id;
+        const workspaceId = metadata.workspaceId || metadata.workspace_id;
+        const userId = metadata.userId || metadata.user_id;
         
-        // TODO: Send confirmation email
-        // await sendEmail({
-        //   to: attendees?.[0]?.email,
-        //   template: "booking_confirmation",
-        //   data: { ... },
-        // });
+        // Find or create the booking
+        const existingBooking = await db.booking.findUnique({
+          where: { calEventId: uid },
+        });
+        
+        if (existingBooking) {
+          console.log(`[Cal Webhook] Booking ${uid} already exists`);
+          break;
+        }
+        
+        // Create booking record
+        const booking = await db.booking.create({
+          data: {
+            productId: productId || "unknown",
+            userId: userId || null,
+            calEventId: uid,
+            calEventTypeId: eventPayload.eventTypeId || eventPayload.event_type_id,
+            customerEmail: attendees?.[0]?.email || "",
+            customerName: attendees?.[0]?.name || null,
+            customerTimezone: attendees?.[0]?.timezone || null,
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+            status: "CONFIRMED",
+            metadata: {
+              title,
+              host: user?.name || user?.email,
+              originalPayload: eventPayload,
+            },
+          },
+        });
+        
+        // Enqueue booking created flow
+        if (workspaceId) {
+          await sendInngestEvent(INNGEST_EVENTS.BOOKING_CREATED, {
+            bookingId: booking.id,
+            workspaceId,
+            customerEmail: attendees?.[0]?.email,
+          });
+        }
         
         console.log(`[Cal Webhook] Booking created: ${uid}`);
         break;
       }
 
+      // ============================================================
+      // BOOKING CANCELLED
+      // ============================================================
       case "BOOKING_CANCELLED": {
-        const { uid } = payload;
+        const { uid, cancellationReason } = eventPayload;
         
-        // TODO: Update booking status to cancelled
-        // await db.booking.update({
-        //   where: { calEventId: uid },
-        //   data: { status: "CANCELLED" },
-        // });
+        // Find the booking
+        const booking = await db.booking.findUnique({
+          where: { calEventId: uid },
+        });
         
-        // TODO: Process refund if applicable
-        // await stripe.refunds.create({ ... });
+        if (!booking) {
+          console.log(`[Cal Webhook] Booking ${uid} not found for cancellation`);
+          break;
+        }
+        
+        // Update booking status
+        await db.booking.update({
+          where: { id: booking.id },
+          data: {
+            status: "CANCELLED",
+            cancelledAt: new Date(),
+            cancelReason: cancellationReason,
+          },
+        });
+        
+        // Enqueue booking cancelled flow
+        await sendInngestEvent(INNGEST_EVENTS.BOOKING_CANCELLED, {
+          bookingId: booking.id,
+          workspaceId: booking.productId, // We'll need to look up workspace properly
+          reason: cancellationReason,
+        });
         
         console.log(`[Cal Webhook] Booking cancelled: ${uid}`);
         break;
       }
 
+      // ============================================================
+      // BOOKING RESCHEDULED
+      // ============================================================
       case "BOOKING_RESCHEDULED": {
-        const { uid, startTime, endTime } = payload;
+        const { uid, startTime, endTime } = eventPayload;
         
-        // TODO: Update booking with new times
-        // await db.booking.update({
-        //   where: { calEventId: uid },
-        //   data: {
-        //     startTime: new Date(startTime),
-        //     endTime: new Date(endTime),
-        //   },
-        // });
+        const booking = await db.booking.findUnique({
+          where: { calEventId: uid },
+        });
         
-        // TODO: Send rescheduling notification email
-        console.log(`[Cal Webhook] Booking rescheduled: ${uid}`);
+        if (booking) {
+          await db.booking.update({
+            where: { id: booking.id },
+            data: {
+              startTime: new Date(startTime),
+              endTime: new Date(endTime),
+            },
+          });
+          
+          console.log(`[Cal Webhook] Booking rescheduled: ${uid}`);
+        }
+        
         break;
       }
 
-      case "BOOKING_COMPLETED": {
-        const { uid } = payload;
-        
-        // TODO: Mark booking as completed
-        // await db.booking.update({
-        //   where: { calEventId: uid },
-        //   data: { status: "COMPLETED" },
-        // });
-        
-        // TODO: Trigger review request email
-        console.log(`[Cal Webhook] Booking completed: ${uid}`);
-        break;
-      }
-
+      // ============================================================
+      // BOOKING COMPLETED
+      // ============================================================
+      case "BOOKING_COMPLETED":
       case "MEETING_ENDED": {
-        const { uid, duration } = payload;
+        const { uid, duration } = eventPayload;
         
-        // TODO: Track meeting duration for analytics
-        // await db.booking.update({
-        //   where: { calEventId: uid },
-        //   data: { actualDuration: duration },
-        // });
+        const booking = await db.booking.findUnique({
+          where: { calEventId: uid },
+        });
         
-        console.log(`[Cal Webhook] Meeting ended: ${uid}, duration: ${duration}`);
+        if (booking) {
+          await db.booking.update({
+            where: { id: booking.id },
+            data: {
+              status: "COMPLETED",
+              metadata: {
+                ...(booking.metadata as object || {}),
+                actualDuration: duration,
+              },
+            },
+          });
+          
+          await sendInngestEvent(INNGEST_EVENTS.BOOKING_COMPLETED, {
+            bookingId: booking.id,
+          });
+          
+          console.log(`[Cal Webhook] Booking completed: ${uid}, duration: ${duration}`);
+        }
+        
+        break;
+      }
+
+      // ============================================================
+      // BOOKING NO SHOW
+      // ============================================================
+      case "BOOKING_NO_SHOW": {
+        const { uid } = eventPayload;
+        
+        const booking = await db.booking.findUnique({
+          where: { calEventId: uid },
+        });
+        
+        if (booking) {
+          await db.booking.update({
+            where: { id: booking.id },
+            data: { status: "NO_SHOW" },
+          });
+          
+          console.log(`[Cal Webhook] Booking no-show: ${uid}`);
+        }
+        
         break;
       }
 

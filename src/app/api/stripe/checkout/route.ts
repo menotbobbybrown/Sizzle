@@ -3,13 +3,48 @@ import { stripe } from "@/lib/stripe";
 import { env } from "@/env";
 import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
+import { checkoutLimiter, getClientIP, checkRateLimit } from "@/lib/ratelimit";
 
 export async function POST(req: Request) {
+  // Apply rate limiting
+  const ip = getClientIP(req);
+  const rateLimitResponse = await checkRateLimit(checkoutLimiter, ip);
+  
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
+
   try {
-    const { productId } = await req.json();
+    const { productId, customAmount, discountCode } = await req.json();
 
     if (!productId || typeof productId !== "string") {
       return NextResponse.json({ error: "Missing productId" }, { status: 400 });
+    }
+
+    // Validate custom amount for PWYW products
+    if (customAmount !== undefined) {
+      const product = await db.product.findUnique({
+        where: { id: productId },
+      });
+
+      if (!product) {
+        return NextResponse.json({ error: "Product not found" }, { status: 404 });
+      }
+
+      if (product.pricingType === "PWYW") {
+        const minPrice = product.minPrice ? Number(product.minPrice) : 1;
+        if (customAmount < minPrice) {
+          return NextResponse.json(
+            { error: `Minimum price is $${minPrice}` },
+            { status: 400 }
+          );
+        }
+      } else if (product.pricingType === "FREE") {
+        return NextResponse.json(
+          { error: "This product is free" },
+          { status: 400 }
+        );
+      }
     }
 
     const session_auth = await auth();
@@ -31,7 +66,44 @@ export async function POST(req: Request) {
       );
     }
 
-    const session = await stripe.checkout.sessions.create({
+    // Build line items based on pricing type
+    let unitAmount: number;
+    
+    if (product.pricingType === "PWYW" && customAmount) {
+      // Use custom amount for PWYW products
+      unitAmount = Math.round(customAmount * 100);
+    } else if (product.pricingType === "FREE") {
+      // Handle free products - redirect to direct access
+      return NextResponse.json({ 
+        url: `${env.NEXT_PUBLIC_APP_URL}/enroll/${productId}?free=true`,
+        isFree: true 
+      });
+    } else {
+      // Fixed price
+      unitAmount = Math.round(Number(product.price) * 100);
+    }
+
+    // Apply discount if provided
+    if (discountCode) {
+      const discount = await db.discountCode.findUnique({
+        where: { code: discountCode.toUpperCase() },
+      });
+
+      if (
+        discount &&
+        discount.isActive &&
+        (!discount.maxUses || discount.usedCount < discount.maxUses) &&
+        (!discount.expiresAt || discount.expiresAt > new Date())
+      ) {
+        if (discount.type === "PERCENTAGE") {
+          unitAmount = Math.round(unitAmount * (1 - Number(discount.value) / 100));
+        } else {
+          unitAmount = Math.max(0, unitAmount - Number(discount.value) * 100);
+        }
+      }
+    }
+
+    const sessionParams: Parameters<typeof stripe.checkout.sessions.create>[0] = {
       line_items: [
         {
           price_data: {
@@ -40,7 +112,7 @@ export async function POST(req: Request) {
               name: product.name,
               images: product.imageUrl ? [product.imageUrl] : [],
             },
-            unit_amount: Math.round(Number(product.price) * 100),
+            unit_amount: unitAmount,
           },
           quantity: 1,
         },
@@ -57,8 +129,12 @@ export async function POST(req: Request) {
         productId: product.id,
         workspaceId: product.workspace.id,
         userId: userId,
+        discountCode: discountCode || "",
+        pricingType: product.pricingType,
       },
-    });
+    };
+
+    const session = await stripe.checkout.sessions.create(sessionParams);
 
     return NextResponse.json({ url: session.url });
   } catch (error) {

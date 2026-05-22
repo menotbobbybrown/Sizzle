@@ -3,6 +3,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { env } from "@/env";
 import { db } from "@/lib/db";
+import { sendInngestEvent, INNGEST_EVENTS } from "@/lib/inngest";
 import { generateToken, hashToken, DEFAULT_TOKEN_CONFIG } from "@/lib/tokens";
 import { sendEmail } from "@/lib/email";
 
@@ -19,12 +20,13 @@ export async function POST(req: NextRequest) {
       env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err: any) {
+    console.error("Stripe webhook signature verification failed:", err.message);
     return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
   }
 
   // Check idempotency - has this event been processed?
   const existingEvent = await db.webhookEvent.findUnique({
-    where: { stripeEventId: event.id },
+    where: { eventId_source: { eventId: event.id, source: "stripe" } },
   });
 
   if (existingEvent && existingEvent.status === "PROCESSED") {
@@ -33,182 +35,263 @@ export async function POST(req: NextRequest) {
 
   // Record the event
   const webhookEvent = await db.webhookEvent.upsert({
-    where: { stripeEventId: event.id },
-    update: {},
+    where: { eventId_source: { eventId: event.id, source: "stripe" } },
+    update: {
+      payload: event.data.object as object,
+    },
     create: {
-      stripeEventId: event.id,
+      eventId: event.id,
+      source: "stripe",
       type: event.type,
       status: "PENDING",
+      payload: event.data.object as object,
     },
   });
 
   try {
     const session = event.data.object as any;
 
-    if (event.type === "checkout.session.completed") {
-      const { productId, workspaceId } = session.metadata;
-      const customerEmail = session.customer_details?.email;
-      const customerName = session.customer_details?.name;
+    switch (event.type) {
+      // ============================================================
+      // CHECKOUT SESSION COMPLETED
+      // ============================================================
+      case "checkout.session.completed": {
+        const { productId, workspaceId, userId, discountCode } = session.metadata;
+        const customerEmail = session.customer_details?.email;
+        const customerName = session.customer_details?.name;
 
-      // Create order
-      const order = await db.order.create({
-        data: {
-          workspaceId,
-          userId: session.metadata.userId || null,
-          isGuest: !session.metadata.userId,
-          customerEmail,
-          customerName,
-          amount: session.amount_total / 100,
-          currency: session.currency.toUpperCase(),
-          status: "PAID",
-          stripeSessionId: session.id,
-          stripePaymentIntentId: session.payment_intent,
-        },
-      });
+        // Check if order already exists (idempotency on Stripe session)
+        const existingOrder = await db.order.findUnique({
+          where: { stripeSessionId: session.id },
+        });
 
-      // Create order item
-      if (productId) {
-        const product = await db.product.findUnique({ where: { id: productId } });
-        if (product) {
-          await db.orderItem.create({
-            data: {
-              orderId: order.id,
-              productId,
-              quantity: 1,
-              unitPrice: product.price,
-            },
-          });
+        if (existingOrder) {
+          console.log(`Order already exists for session ${session.id}`);
+          break;
+        }
 
-          // Generate access token for digital fulfillment
-          const rawToken = generateToken();
-          const tokenHash = hashToken(rawToken);
+        // Create order
+        const order = await db.order.create({
+          data: {
+            workspaceId,
+            userId: userId || null,
+            isGuest: !userId,
+            customerEmail,
+            customerName,
+            amount: session.amount_total / 100,
+            currency: session.currency.toUpperCase(),
+            status: "PAID",
+            stripeSessionId: session.id,
+            stripePaymentIntentId: session.payment_intent,
+            discountCodeId: discountCode ? (
+              await db.discountCode.findUnique({ where: { code: discountCode } })
+            )?.id : null,
+          },
+        });
 
-          await db.accessToken.create({
-            data: {
-              tokenHash,
-              orderId: order.id,
-              productId,
-              maxUses: DEFAULT_TOKEN_CONFIG.maxUses,
-              expiresAt: new Date(
-                Date.now() + DEFAULT_TOKEN_CONFIG.expiresInHours * 60 * 60 * 1000
-              ),
-            },
-          });
-
-          // Create enrollment for course products
-          if (product.type === "COURSE" && session.metadata.userId) {
-            await db.enrollment.upsert({
-              where: {
-                userId_productId: {
-                  userId: session.metadata.userId,
-                  productId,
-                },
-              },
-              update: { status: "ACTIVE" },
-              create: {
-                userId: session.metadata.userId,
+        // Create order item
+        if (productId) {
+          const product = await db.product.findUnique({ where: { id: productId } });
+          if (product) {
+            await db.orderItem.create({
+              data: {
+                orderId: order.id,
                 productId,
-                status: "ACTIVE",
+                quantity: 1,
+                unitPrice: product.price,
               },
             });
           }
+        }
 
-          // Send post-purchase receipt email
-          const accessUrl = `${env.APP_URL}/api/access/${rawToken}`;
-          const workspace = await db.workspace.findUnique({ where: { id: workspaceId } });
+        // Create payment record
+        await db.payment.create({
+          data: {
+            orderId: order.id,
+            stripePaymentIntentId: session.payment_intent,
+            stripeSessionId: session.id,
+            amount: session.amount_total / 100,
+            currency: session.currency.toUpperCase(),
+            status: "SUCCEEDED",
+          },
+        });
 
-          await sendEmail({
-            to: customerEmail ?? session.customer_details?.email ?? "",
-            subject: `Your purchase of ${product.name}`,
-            html: `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8" /></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 0; background-color: #f4f4f5;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 600px; margin: 0 auto; padding: 24px;">
-    <tr>
-      <td style="text-align: center; padding: 24px 0;">
-        <h1 style="font-size: 24px; margin: 0;">Thank you for your purchase!</h1>
-        <p style="color: #71717a; margin-top: 8px;">Your order has been confirmed.</p>
-      </td>
-    </tr>
-    <tr>
-      <td style="background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-        <h2 style="font-size: 18px; margin: 0 0 16px;">${product.name}</h2>
-        <p style="color: #71717a;">Amount paid: ${order.amount}</p>
-        <a href="${accessUrl}" style="display: inline-block; margin-top: 16px; background: #000; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 500;">
-          Access your purchase
-        </a>
-      </td>
-    </tr>
-    <tr>
-      <td style="text-align: center; padding-top: 24px; color: #71717a; font-size: 12px;">
-        <p>Powered by Sizzle${workspace ? ` &mdash; ${workspace.name}` : ""}</p>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`,
-            tags: [
-              { name: "orderId", value: order.id },
-              { name: "type", value: "receipt" },
-            ],
-          });
+        // Enqueue post-purchase work via Inngest
+        await sendInngestEvent(INNGEST_EVENTS.ORDER_PAID, {
+          orderId: order.id,
+          workspaceId,
+          userId,
+          productId,
+          amount: session.amount_total / 100,
+        });
 
-          // Log email send
-          await db.emailLog.create({
+        break;
+      }
+
+      // ============================================================
+      // SUBSCRIPTION EVENTS
+      // ============================================================
+      case "customer.subscription.created":
+      case "customer.subscription.updated": {
+        const subscription = session;
+        
+        // Find or create the subscription record
+        const existingSubscription = await db.memberSubscription.findUnique({
+          where: { stripeSubscriptionId: subscription.id },
+        });
+
+        if (existingSubscription) {
+          // Update existing subscription
+          await db.memberSubscription.update({
+            where: { id: existingSubscription.id },
             data: {
-              orderId: order.id,
-              to: customerEmail ?? "",
-              subject: `Your purchase of ${product.name}`,
-              template: "receipt",
-              status: "SENT",
+              status: mapStripeSubscriptionStatus(subscription.status),
+              currentPeriodStart: new Date(subscription.current_period_start * 1000),
+              currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+              cancelAtPeriodEnd: subscription.cancel_at_period_end,
             },
           });
+        } else {
+          // This is a new subscription - find the user by customer ID
+          // We'd need to look up the customer in Stripe or have stored the mapping
+          console.log(`New subscription ${subscription.id} - user mapping needed`);
         }
-      }
 
-      // Create payment record
-      await db.payment.create({
-        data: {
-          orderId: order.id,
-          stripePaymentIntentId: session.payment_intent,
-          stripeSessionId: session.id,
-          amount: session.amount_total / 100,
-          currency: session.currency.toUpperCase(),
-          status: "SUCCEEDED",
-        },
-      });
-    }
-
-    if (event.type === "checkout.session.expired") {
-      const order = await db.order.findUnique({
-        where: { stripeSessionId: session.id },
-      });
-      if (order && order.status === "PENDING") {
-        await db.order.update({
-          where: { id: order.id },
-          data: { status: "FAILED" },
-        });
-      }
-    }
-
-    if (event.type === "charge.refunded") {
-      const paymentIntentId = session.payment_intent;
-      if (paymentIntentId) {
-        const payment = await db.payment.findUnique({
-          where: { stripePaymentIntentId: paymentIntentId },
-        });
-        if (payment) {
-          await db.payment.update({
-            where: { id: payment.id },
-            data: { status: "REFUNDED" },
+        // Emit subscription created event
+        if (event.type === "customer.subscription.created") {
+          await sendInngestEvent(INNGEST_EVENTS.SUBSCRIPTION_CREATED, {
+            stripeSubscriptionId: subscription.id,
+            status: subscription.status,
           });
+        }
+
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const subscription = session;
+
+        const dbSubscription = await db.memberSubscription.findUnique({
+          where: { stripeSubscriptionId: subscription.id },
+        });
+
+        if (dbSubscription) {
+          await db.memberSubscription.update({
+            where: { id: dbSubscription.id },
+            data: {
+              status: "CANCELED",
+            },
+          });
+
+          await sendInngestEvent(INNGEST_EVENTS.SUBSCRIPTION_CANCELED, {
+            subscriptionId: dbSubscription.id,
+            userId: dbSubscription.userId,
+          });
+        }
+
+        break;
+      }
+
+      // ============================================================
+      // INVOICE EVENTS
+      // ============================================================
+      case "invoice.payment_failed": {
+        const invoice = session;
+
+        const dbSubscription = await db.memberSubscription.findUnique({
+          where: { stripeSubscriptionId: invoice.subscription },
+        });
+
+        if (dbSubscription) {
+          await db.memberSubscription.update({
+            where: { id: dbSubscription.id },
+            data: {
+              status: "PAST_DUE",
+            },
+          });
+
+          await sendInngestEvent(INNGEST_EVENTS.INVOICE_PAYMENT_FAILED, {
+            subscriptionId: dbSubscription.id,
+            userId: dbSubscription.userId,
+            invoiceId: invoice.id,
+          });
+        }
+
+        break;
+      }
+
+      case "invoice.payment_succeeded": {
+        const invoice = session;
+
+        // If this is a subscription renewal, update the subscription
+        if (invoice.subscription) {
+          const dbSubscription = await db.memberSubscription.findUnique({
+            where: { stripeSubscriptionId: invoice.subscription },
+          });
+
+          if (dbSubscription) {
+            await db.memberSubscription.update({
+              where: { id: dbSubscription.id },
+              data: {
+                status: "ACTIVE",
+                currentPeriodStart: new Date(invoice.period_start * 1000),
+                currentPeriodEnd: new Date(invoice.period_end * 1000),
+              },
+            });
+
+            await sendInngestEvent(INNGEST_EVENTS.SUBSCRIPTION_RENEWED, {
+              subscriptionId: dbSubscription.id,
+              userId: dbSubscription.userId,
+            });
+          }
+        }
+
+        break;
+      }
+
+      // ============================================================
+      // CHARGE REFUNDS
+      // ============================================================
+      case "charge.refunded": {
+        const paymentIntentId = session.payment_intent;
+        if (paymentIntentId) {
+          const payment = await db.payment.findUnique({
+            where: { stripePaymentIntentId: paymentIntentId },
+          });
+          if (payment) {
+            await db.payment.update({
+              where: { id: payment.id },
+              data: { status: "REFUNDED" },
+            });
+            await db.order.update({
+              where: { id: payment.orderId },
+              data: { status: "REFUNDED" },
+            });
+          }
+        }
+
+        break;
+      }
+
+      // ============================================================
+      // CHECKOUT SESSION EXPIRED
+      // ============================================================
+      case "checkout.session.expired": {
+        const order = await db.order.findUnique({
+          where: { stripeSessionId: session.id },
+        });
+        if (order && order.status === "PENDING") {
           await db.order.update({
-            where: { id: payment.orderId },
-            data: { status: "REFUNDED" },
+            where: { id: order.id },
+            data: { status: "FAILED" },
           });
         }
+
+        break;
       }
+
+      default:
+        console.log(`Unhandled Stripe event type: ${event.type}`);
     }
 
     // Mark event as processed
@@ -220,9 +303,37 @@ export async function POST(req: NextRequest) {
     console.error("Webhook processing error:", error);
     await db.webhookEvent.update({
       where: { id: webhookEvent.id },
-      data: { status: "FAILED" },
+      data: { 
+        status: "FAILED",
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
     });
+    return new NextResponse("Internal error", { status: 500 });
   }
 
   return NextResponse.json({ received: true });
+}
+
+/**
+ * Map Stripe subscription status to our enum
+ */
+function mapStripeSubscriptionStatus(status: string) {
+  switch (status) {
+    case "active":
+      return "ACTIVE";
+    case "past_due":
+      return "PAST_DUE";
+    case "canceled":
+      return "CANCELED";
+    case "unpaid":
+      return "UNPAID";
+    case "incomplete":
+      return "INCOMPLETE";
+    case "incomplete_expired":
+      return "INCOMPLETE_EXPIRED";
+    case "trialing":
+      return "TRIALING";
+    default:
+      return "ACTIVE";
+  }
 }
