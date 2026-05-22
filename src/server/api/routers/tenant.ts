@@ -2,6 +2,8 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure, creatorProcedure, publicProcedure } from "@/server/api/trpc";
 import { TRPCError } from "@trpc/server";
 import { isReservedHandle } from "@/config/route-map";
+import { revalidateTag } from "next/cache";
+import { cache } from "@/lib/cache";
 
 export const tenantRouter = createTRPCRouter({
   create: protectedProcedure
@@ -92,5 +94,30 @@ export const tenantRouter = createTRPCRouter({
         where: { id: ctx.workspace.id },
         data: input,
       });
+    }),
+
+  updateDesign: creatorProcedure
+    .input(z.object({ config: z.record(z.unknown()) }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db.storefrontTheme.upsert({
+        where: { workspaceId: ctx.workspace.id },
+        update: {
+          config: input.config as any,
+          published: true,
+        },
+        create: {
+          workspaceId: ctx.workspace.id,
+          config: input.config as any,
+          published: true,
+        },
+      });
+
+      // Revalidate Next.js cache tag
+      revalidateTag(`storefront-${ctx.workspace.handle}`);
+
+      // Invalidate Redis storefront cache
+      await cache.invalidateStorefront(ctx.workspace.handle);
+
+      return { success: true };
     }),
 });
