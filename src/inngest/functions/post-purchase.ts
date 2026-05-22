@@ -1,9 +1,12 @@
 import { inngest, INNGEST_EVENTS } from "@/lib/inngest";
 import { db } from "@/lib/db";
+import { revalidateTag } from "next/cache";
+import { cache } from "@/lib/cache";
 import { sendEmail } from "@/lib/email";
 import { getPusher, PUSHER_CHANNELS, PUSHER_EVENTS } from "@/lib/pusher";
 import { env } from "@/env";
 import { generateToken, hashToken, DEFAULT_TOKEN_CONFIG } from "@/lib/tokens";
+import { stripeWebhookHandler } from "./stripe-webhooks";
 
 // ============================================================
 // POST-PURCHASE FLOW
@@ -247,6 +250,18 @@ export const postPurchaseFlow = inngest.createFunction(
         productName: order.items[0]?.product.name,
         timestamp: new Date().toISOString(),
       });
+    });
+
+    // Step 7: Revalidate storefront
+    await step.run("Revalidate Storefront", async () => {
+      const workspace = await db.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { handle: true },
+      });
+      if (workspace?.handle) {
+        revalidateTag(`storefront-${workspace.handle}`);
+        await cache.invalidateStorefront(workspace.handle);
+      }
     });
     
     return { success: true, orderId };
@@ -547,4 +562,5 @@ export const inngestFunctions = [
   subscriptionCreatedFlow,
   subscriptionCancelledFlow,
   courseCompletedFlow,
+  stripeWebhookHandler,
 ];
