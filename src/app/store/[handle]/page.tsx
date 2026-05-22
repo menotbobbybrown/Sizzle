@@ -296,7 +296,7 @@ export default async function StorePage({ params }: Props) {
                     </h3>
                   </div>
                   
-                  {!isList && (
+                  {layout !== "list" && (
                     <p className="text-sm text-zinc-500 mb-6 line-clamp-2 min-h-[2.5rem]">
                       {product.description}
                     </p>
@@ -373,6 +373,12 @@ export default async function StorePage({ params }: Props) {
     </div>
   );
 }
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
 /home/engine/.bashrc: line 1: syntax error near unexpected token `('
 /home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
 /home/engine/.bashrc: line 1: syntax error near unexpected token `('
