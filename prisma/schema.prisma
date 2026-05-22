@@ -119,6 +119,13 @@ model Workspace {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   discountCodes DiscountCode[]
+
+  // New fields from Part 4
+  country      String?
+  timezone     String  @default("UTC")
+  currency     String  @default("USD")
+  totalRevenue Decimal @default(0) @db.Decimal(12, 2)
+  totalSales   Int     @default(0)
 }
 
 model WorkspaceMember {
@@ -262,6 +269,11 @@ model Product {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   reviews   Review[]
+
+  // New fields from Part 4
+  videoStatus  String?
+  totalSales   Int     @default(0)
+  totalRevenue Decimal @default(0) @db.Decimal(10, 2)
 
   @@unique([workspaceId, slug])
   @@index([workspaceId, status])
@@ -514,6 +526,12 @@ model Lesson {
   progress LessonProgress[]
   muxAsset MuxAsset?
 
+  // New fields from Part 4
+  videoStatus   String? @default("PENDING")
+  videoSize     Int?
+  videoDuration Int?
+  subtitleUrl   String?
+
   @@index([moduleId, order])
 }
 
@@ -577,6 +595,12 @@ model Order {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // New fields from Part 4
+  affiliateCode String?
+  metadata      Json      @default("{}")
+  refundReason  String?
+  refundedAt    DateTime?
 
   @@index([workspaceId, createdAt])
   @@index([customerEmail])
@@ -724,6 +748,7 @@ model Enrollment {
 
   // Progress percentage
   progressPercent Int @default(0)
+  progress        Int @default(0)
 
   user    User    @relation(fields: [userId], references: [id])
   product Product @relation(fields: [productId], references: [id])

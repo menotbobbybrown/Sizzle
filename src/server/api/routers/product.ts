@@ -4,6 +4,8 @@ import { createTRPCRouter, publicProcedure, creatorProcedure } from "@/server/ap
 import { ProductType, ProductStatus } from "@prisma/client";
 import { isReservedHandle } from "@/config/route-map";
 import { generatePresignedUrl, generateFileKey } from "@/lib/r2";
+import { revalidateTag } from "next/cache";
+import { cache } from "@/lib/cache";
 
 export const productRouter = createTRPCRouter({
   /**
@@ -137,6 +139,10 @@ export const productRouter = createTRPCRouter({
         });
       }
 
+      // Revalidate
+      revalidateTag(`storefront-${ctx.workspace.handle}`);
+      await cache.invalidateStorefront(ctx.workspace.handle);
+
       return product;
     }),
 
@@ -165,10 +171,18 @@ export const productRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND", message: "Product not found" });
       }
 
-      return ctx.db.product.update({
+      const updatedProduct = await ctx.db.product.update({
         where: { id },
         data,
       });
+
+      // Revalidate
+      revalidateTag(`product-${ctx.workspace.handle}-${updatedProduct.slug}`);
+      revalidateTag(`storefront-${ctx.workspace.handle}`);
+      await cache.invalidateProduct(ctx.workspace.handle, updatedProduct.slug);
+      await cache.invalidateStorefront(ctx.workspace.handle);
+
+      return updatedProduct;
     }),
 
   /**
@@ -187,10 +201,18 @@ export const productRouter = createTRPCRouter({
 
       const newStatus = product.status === "PUBLISHED" ? "DRAFT" : "PUBLISHED";
 
-      return ctx.db.product.update({
+      const updatedProduct = await ctx.db.product.update({
         where: { id: input.id },
         data: { status: newStatus },
       });
+
+      // Revalidate
+      revalidateTag(`product-${ctx.workspace.handle}-${updatedProduct.slug}`);
+      revalidateTag(`storefront-${ctx.workspace.handle}`);
+      await cache.invalidateProduct(ctx.workspace.handle, updatedProduct.slug);
+      await cache.invalidateStorefront(ctx.workspace.handle);
+
+      return updatedProduct;
     }),
 
   /**
@@ -222,6 +244,12 @@ export const productRouter = createTRPCRouter({
       await ctx.db.product.delete({
         where: { id: input.id },
       });
+
+      // Revalidate
+      revalidateTag(`product-${ctx.workspace.handle}-${product.slug}`);
+      revalidateTag(`storefront-${ctx.workspace.handle}`);
+      await cache.invalidateProduct(ctx.workspace.handle, product.slug);
+      await cache.invalidateStorefront(ctx.workspace.handle);
 
       return { success: true };
     }),

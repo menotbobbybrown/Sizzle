@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, publicProcedure, protectedProcedure, creatorProcedure } from "@/server/api/trpc";
+import { revalidateTag } from "next/cache";
+import { cache } from "@/lib/cache";
 
 export const creatorRouter = createTRPCRouter({
   /**
@@ -69,6 +71,10 @@ export const creatorRouter = createTRPCRouter({
           bannerUrl: input.bannerUrl,
         },
       });
+
+      // Revalidate
+      revalidateTag(`storefront-${ctx.workspace.handle}`);
+      await cache.invalidateStorefront(ctx.workspace.handle);
 
       return updated;
     }),

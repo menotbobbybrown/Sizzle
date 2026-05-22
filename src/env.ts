@@ -52,6 +52,7 @@ export const env = createEnv({
     UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
 
     // Cal.com Webhooks
+    CALCOM_API_KEY: z.string().optional(),
     CALCOM_WEBHOOK_SECRET: z.string().optional(),
 
     // Inngest (background jobs)
@@ -64,6 +65,9 @@ export const env = createEnv({
 
     // YouTube API
     YOUTUBE_API_KEY: z.string().optional(),
+
+    // Revalidation
+    REVALIDATE_SECRET: z.string().min(1).optional(),
 
     // Encryption key for OAuth tokens (AES-256)
     ENCRYPTION_KEY: z.string().min(32).optional(),
@@ -104,12 +108,14 @@ export const env = createEnv({
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
     UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
+    CALCOM_API_KEY: process.env.CALCOM_API_KEY,
     CALCOM_WEBHOOK_SECRET: process.env.CALCOM_WEBHOOK_SECRET,
     INNGEST_EVENT_KEY: process.env.INNGEST_EVENT_KEY,
     INNGEST_SIGNING_KEY: process.env.INNGEST_SIGNING_KEY,
     TIKTOK_CLIENT_KEY: process.env.TIKTOK_CLIENT_KEY,
     TIKTOK_CLIENT_SECRET: process.env.TIKTOK_CLIENT_SECRET,
     YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY,
+    REVALIDATE_SECRET: process.env.REVALIDATE_SECRET,
     ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
   },
   skipValidation: !!process.env.SKIP_ENV_VALIDATION,
