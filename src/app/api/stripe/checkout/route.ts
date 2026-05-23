@@ -103,6 +103,14 @@ export async function POST(req: Request) {
       }
     }
 
+    // Read affiliate code from cookie
+    const cookieHeader = req.headers.get("cookie") || "";
+    const affiliateCode = cookieHeader
+      .split(";")
+      .map((c) => c.trim())
+      .find((c) => c.startsWith("sizzle_ref="))
+      ?.split("=")[1];
+
     const sessionParams: Parameters<typeof stripe.checkout.sessions.create>[0] = {
       line_items: [
         {
@@ -131,6 +139,7 @@ export async function POST(req: Request) {
         userId: userId,
         discountCode: discountCode || "",
         pricingType: product.pricingType,
+        ...(affiliateCode ? { affiliateCode } : {}),
       },
     };
 
@@ -144,4 +153,9 @@ export async function POST(req: Request) {
       { status: 500 }
     );
   }
-}
+}/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'

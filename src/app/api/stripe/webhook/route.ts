@@ -70,6 +70,24 @@ export async function POST(req: NextRequest) {
           break;
         }
 
+        // Resolve affiliate attribution
+        const affiliateCode = session.metadata?.affiliateCode;
+        let affiliateLinkId: string | null = null;
+
+        if (affiliateCode) {
+          const affiliateLink = await db.affiliateLink.findFirst({
+            where: {
+              workspaceId,
+              code: affiliateCode,
+              isActive: true,
+            },
+          });
+
+          if (affiliateLink) {
+            affiliateLinkId = affiliateLink.id;
+          }
+        }
+
         // Create order
         const order = await db.order.create({
           data: {
@@ -86,8 +104,18 @@ export async function POST(req: NextRequest) {
             discountCodeId: discountCode ? (
               await db.discountCode.findUnique({ where: { code: discountCode } })
             )?.id : null,
+            affiliateCode: affiliateCode || null,
+            affiliateLinkId,
           },
         });
+
+        // Increment affiliate conversion count if attribution resolved
+        if (affiliateLinkId) {
+          await db.affiliateLink.update({
+            where: { id: affiliateLinkId },
+            data: { conversionCount: { increment: 1 } },
+          });
+        }
 
         // Create order item
         if (productId) {
@@ -336,4 +364,9 @@ function mapStripeSubscriptionStatus(status: string) {
     default:
       return "ACTIVE";
   }
-}
+}/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
