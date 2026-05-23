@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
+import { hashToken } from "@/lib/tokens";
 
 type Props = {
   params: Promise<{ token: string }>;
@@ -17,38 +18,38 @@ export default async function EnrollPage({ params }: Props) {
   const { token } = await params;
   const session = await auth();
 
-  // TODO: Validate enrollment token (this would be a different token system)
-  // For now, redirect to the course if user is enrolled
-  
-  // Find product by token or slug
-  const product = await db.product.findFirst({
-    where: { 
-      OR: [
-        { id: token },
-        { slug: token },
-      ],
-      type: "COURSE",
-    },
+  // ── Validate the enrollment/access token ─────────────────────────
+  // Hash the raw token and look up in the AccessToken table
+  const tokenHash = hashToken(token);
+
+  const accessToken = await db.accessToken.findUnique({
+    where: { tokenHash },
     include: {
-      workspace: { select: { name: true, handle: true } },
-      course: {
+      product: {
         include: {
-          modules: {
-            include: { lessons: true },
-            orderBy: { order: "asc" },
+          workspace: { select: { name: true, handle: true } },
+          course: {
+            include: {
+              modules: {
+                include: { lessons: true },
+                orderBy: { order: "asc" },
+              },
+            },
           },
         },
       },
+      order: true,
     },
   });
 
-  if (!product || !product.course) {
+  // ── Token not found ──────────────────────────────────────────────
+  if (!accessToken) {
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-white rounded-xl border border-zinc-200 p-8 text-center">
-          <h1 className="text-xl font-semibold text-zinc-900 mb-2">Course Not Found</h1>
+          <h1 className="text-xl font-semibold text-zinc-900 mb-2">Invalid Link</h1>
           <p className="text-zinc-500 mb-6">
-            This course doesn&apos;t exist or may have been removed.
+            This enrollment link is invalid or does not exist. Please check the link or contact the creator for support.
           </p>
           <Link href="/" className="text-zinc-900 font-medium hover:underline">
             Go to Homepage
@@ -58,23 +59,135 @@ export default async function EnrollPage({ params }: Props) {
     );
   }
 
-  // Check if user is enrolled
-  let enrollment = null;
+  // ── Token expired ────────────────────────────────────────────────
+  if (accessToken.expiresAt && accessToken.expiresAt < new Date()) {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-xl border border-zinc-200 p-8 text-center">
+          <h1 className="text-xl font-semibold text-zinc-900 mb-2">Link Expired</h1>
+          <p className="text-zinc-500 mb-6">
+            This enrollment link has expired. Please contact the creator for a new link.
+          </p>
+          <Link href="/" className="text-zinc-900 font-medium hover:underline">
+            Go to Homepage
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Token revoked ────────────────────────────────────────────────
+  if (accessToken.revokedAt) {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-xl border border-zinc-200 p-8 text-center">
+          <h1 className="text-xl font-semibold text-zinc-900 mb-2">Access Revoked</h1>
+          <p className="text-zinc-500 mb-6">
+            This enrollment link has been revoked. Please contact the creator for assistance.
+          </p>
+          <Link href="/" className="text-zinc-900 font-medium hover:underline">
+            Go to Homepage
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Token exhausted ──────────────────────────────────────────────
+  if (accessToken.maxUses > 0 && accessToken.useCount >= accessToken.maxUses) {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-xl border border-zinc-200 p-8 text-center">
+          <h1 className="text-xl font-semibold text-zinc-900 mb-2">Link Already Used</h1>
+          <p className="text-zinc-500 mb-6">
+            This enrollment link has already been used the maximum number of times.
+          </p>
+          <Link href="/" className="text-zinc-900 font-medium hover:underline">
+            Go to Homepage
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Product validation ───────────────────────────────────────────
+  const product = accessToken.product;
+
+  if (!product) {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-xl border border-zinc-200 p-8 text-center">
+          <h1 className="text-xl font-semibold text-zinc-900 mb-2">Product Not Found</h1>
+          <p className="text-zinc-500 mb-6">
+            The product associated with this link no longer exists.
+          </p>
+          <Link href="/" className="text-zinc-900 font-medium hover:underline">
+            Go to Homepage
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Authenticated user: upsert enrollment and redirect ───────────
   if (session?.user?.id) {
-    enrollment = await db.enrollment.findUnique({
+    const userId = session.user.id;
+
+    // Check for existing enrollment
+    const existingEnrollment = await db.enrollment.findUnique({
       where: {
         userId_productId: {
-          userId: session.user.id,
+          userId,
           productId: product.id,
         },
       },
     });
+
+    // For COURSE type products, upsert enrollment as ACTIVE
+    if (product.type === "COURSE") {
+      if (!existingEnrollment || existingEnrollment.status !== "ACTIVE") {
+        await db.enrollment.upsert({
+          where: {
+            userId_productId: {
+              userId,
+              productId: product.id,
+            },
+          },
+          update: { status: "ACTIVE" },
+          create: {
+            userId,
+            productId: product.id,
+            status: "ACTIVE",
+          },
+        });
+      }
+
+      // Increment token use count
+      await db.accessToken.update({
+        where: { id: accessToken.id },
+        data: {
+          useCount: { increment: 1 },
+          lastUsedAt: new Date(),
+        },
+      });
+    }
+
+    // Redirect enrolled user to product/course page with enrolled marker
+    const productSlug = product.slug;
+    if (productSlug) {
+      redirect(`/store/${product.workspace.handle}/p/${productSlug}?enrolled=true`);
+    } else {
+      redirect(`/dashboard/courses/${product.id}`);
+    }
   }
 
-  const totalLessons = product.course.modules.reduce(
+  // ── Not logged in: show sign-in CTA ──────────────────────────────
+  const totalLessons = product.course?.modules.reduce(
     (acc, m) => acc + m.lessons.length,
     0
-  );
+  ) ?? 0;
+
+  const totalModules = product.course?.modules.length ?? 0;
 
   return (
     <div className="min-h-screen bg-zinc-50">
@@ -98,77 +211,53 @@ export default async function EnrollPage({ params }: Props) {
           <div className="text-center mb-8">
             <h2 className="text-2xl font-bold text-zinc-900 mb-2">Ready to start learning?</h2>
             <p className="text-zinc-500">
-              {totalLessons} lessons across {product.course.modules.length} modules
+              {totalLessons > 0
+                ? `${totalLessons} lessons across ${totalModules} modules`
+                : "Access your purchased content"}
             </p>
           </div>
 
-          {enrollment ? (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between p-4 bg-green-50 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <svg className="w-6 h-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span className="font-medium text-green-900">You&apos;re enrolled!</span>
-                </div>
-                <span className="text-sm text-green-700">Status: {enrollment.status}</span>
-              </div>
-              <a
-                href={`/learn/${product.slug}`}
-                className="block w-full bg-zinc-900 text-white text-center py-3 rounded-lg font-medium hover:bg-zinc-800 transition-colors"
-              >
-                Continue Learning
-              </a>
-            </div>
-          ) : session?.user ? (
-            <div className="text-center">
-              <p className="text-zinc-500 mb-4">You need to purchase this course to access it.</p>
-              <Link
-                href={`/@${product.workspace.handle}/p/${product.slug}`}
-                className="inline-block bg-zinc-900 text-white px-8 py-3 rounded-lg font-medium hover:bg-zinc-800 transition-colors"
-              >
-                Purchase Course
-              </Link>
-            </div>
-          ) : (
-            <div className="text-center">
-              <p className="text-zinc-500 mb-4">Sign in to access your enrolled courses.</p>
-              <Link
-                href={`/login?redirect=/enroll/${token}`}
-                className="inline-block bg-zinc-900 text-white px-8 py-3 rounded-lg font-medium hover:bg-zinc-800 transition-colors"
-              >
-                Sign In
-              </Link>
-            </div>
-          )}
-        </div>
-
-        <div className="bg-white rounded-xl border border-zinc-200 p-8">
-          <h3 className="font-semibold text-zinc-900 mb-6">Course Contents</h3>
-          <div className="space-y-6">
-            {product.course.modules.map((module, index) => (
-              <div key={module.id}>
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="w-8 h-8 rounded-full bg-zinc-100 flex items-center justify-center text-sm font-medium text-zinc-600">
-                    {index + 1}
-                  </span>
-                  <h4 className="font-medium text-zinc-900">{module.title}</h4>
-                  <span className="text-sm text-zinc-400 ml-auto">{module.lessons.length} lessons</span>
-                </div>
-                <ul className="ml-11 space-y-2">
-                  {module.lessons.map((lesson) => (
-                    <li key={lesson.id} className="flex items-center gap-2 text-sm text-zinc-600">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                      </svg>
-                      {lesson.title}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+          <div className="text-center">
+            <p className="text-zinc-500 mb-4">Sign in to access your enrolled courses.</p>
+            <Link
+              href={`/login?redirect=/enroll/${token}`}
+              className="inline-block bg-zinc-900 text-white px-8 py-3 rounded-lg font-medium hover:bg-zinc-800 transition-colors"
+            >
+              Sign In
+            </Link>
           </div>
         </div>
+
+        {product.course && (
+          <div className="bg-white rounded-xl border border-zinc-200 p-8">
+            <h3 className="font-semibold text-zinc-900 mb-6">Course Contents</h3>
+            <div className="space-y-6">
+              {product.course.modules.map((module, index) => (
+                <div key={module.id}>
+                  <div className="flex items-center gap-3 mb-3">
+                    <span className="w-8 h-8 rounded-full bg-zinc-100 flex items-center justify-center text-sm font-medium text-zinc-600">
+                      {index + 1}
+                    </span>
+                    <h4 className="font-medium text-zinc-900">{module.title}</h4>
+                    <span className="text-sm text-zinc-400 ml-auto">
+                      {module.lessons.length} lesson{module.lessons.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                  <ul className="ml-11 space-y-2">
+                    {module.lessons.map((lesson) => (
+                      <li key={lesson.id} className="flex items-center gap-2 text-sm text-zinc-600">
+                        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        {lesson.title}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
