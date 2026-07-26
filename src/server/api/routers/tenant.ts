@@ -2,7 +2,7 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure, creatorProcedure, publicProcedure } from "@/server/api/trpc";
 import { TRPCError } from "@trpc/server";
 import { isReservedHandle } from "@/config/route-map";
-import { revalidateTag } from "next/cache";
+import { revalidateTag } from "@/lib/revalidate";
 import { cache } from "@/lib/cache";
 
 export const tenantRouter = createTRPCRouter({
@@ -97,7 +97,7 @@ export const tenantRouter = createTRPCRouter({
     }),
 
   updateDesign: creatorProcedure
-    .input(z.object({ config: z.record(z.unknown()) }))
+    .input(z.object({ config: z.record(z.string(), z.unknown()) }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.storefrontTheme.upsert({
         where: { workspaceId: ctx.workspace.id },

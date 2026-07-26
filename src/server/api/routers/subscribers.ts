@@ -88,14 +88,16 @@ export const subscriberRouter = createTRPCRouter({
       z.object({
         name: z.string().min(1),
         description: z.string().optional(),
-        rules: z.record(z.unknown()).default({}),
+        rules: z.record(z.string(), z.unknown()).default({}),
       })
     )
     .mutation(({ ctx, input }) => {
       return ctx.db.segment.create({
         data: {
           workspaceId: ctx.workspace.id,
-          ...input,
+          name: input.name,
+          description: input.description,
+          rules: input.rules as object,
         },
       });
     }),

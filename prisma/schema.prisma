@@ -3,6 +3,8 @@ generator client {
 }
 
 datasource db {
+  // Prisma 7: connection URLs (url + directUrl) are configured in
+  // `prisma.config.ts` under `datasource`, not here.
   provider = "postgresql"
 }
 
@@ -133,6 +135,8 @@ model WorkspaceMember {
   workspaceId String
   userId      String
   role        WorkspaceRole @default(MEMBER)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -560,6 +564,7 @@ model MuxAsset {
   muxPlaybackId String?
   status        MuxAssetStatus @default(PREPARING)
   duration      Int?
+  metadata      Json?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 }

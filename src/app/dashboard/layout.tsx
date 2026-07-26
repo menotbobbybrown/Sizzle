@@ -1,10 +1,24 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
-export default function DashboardLayout({
+import { auth } from "@/lib/auth";
+
+/**
+ * Authoritative auth gate for the entire creator dashboard. Placing it in the
+ * layout means every `/dashboard/*` page is protected by construction, instead
+ * of relying on each page to remember its own `auth()` check.
+ */
+export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const session = await auth();
+
+  if (!session?.user) {
+    redirect("/login?callbackUrl=/dashboard");
+  }
+
   return (
     <div className="min-h-screen flex">
       <aside className="w-64 border-r border-zinc-200 bg-white hidden md:flex flex-col">

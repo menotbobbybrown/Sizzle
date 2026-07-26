@@ -1,8 +1,11 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createTRPCRouter, creatorProcedure, publicProcedure } from "@/server/api/trpc";
-
-// TODO: Implement review router fully
+import {
+  createTRPCRouter,
+  creatorProcedure,
+  protectedProcedure,
+  publicProcedure,
+} from "@/server/api/trpc";
 
 export const reviewRouter = createTRPCRouter({
   /**
@@ -35,9 +38,11 @@ export const reviewRouter = createTRPCRouter({
     }),
 
   /**
-   * Create a review (after purchase)
+   * Create a review. Requires authentication and a verified purchase, and is
+   * limited to one review per user per product. New reviews start PENDING so the
+   * creator can moderate them before they appear on the storefront.
    */
-  create: publicProcedure
+  create: protectedProcedure
     .input(
       z.object({
         productId: z.string(),
@@ -46,14 +51,55 @@ export const reviewRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      throw new TRPCError({
-        code: "NOT_IMPLEMENTED",
-        message: "review.create - TODO: implement review creation with purchase verification",
+      const userId = ctx.session.user.id;
+
+      // Verify the reviewer actually bought (or is enrolled in) the product.
+      const [purchased, enrolled] = await Promise.all([
+        ctx.db.orderItem.findFirst({
+          where: {
+            productId: input.productId,
+            order: { userId, status: { in: ["PAID", "FULFILLED"] } },
+          },
+          select: { id: true },
+        }),
+        ctx.db.enrollment.findUnique({
+          where: { userId_productId: { userId, productId: input.productId } },
+          select: { id: true },
+        }),
+      ]);
+
+      if (!purchased && !enrolled) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You can only review products you have purchased",
+        });
+      }
+
+      // One review per user per product.
+      const existing = await ctx.db.review.findFirst({
+        where: { productId: input.productId, userId },
+        select: { id: true },
+      });
+      if (existing) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "You have already reviewed this product",
+        });
+      }
+
+      return ctx.db.review.create({
+        data: {
+          productId: input.productId,
+          userId,
+          rating: input.rating,
+          content: input.content,
+          status: "PENDING",
+        },
       });
     }),
 
   /**
-   * Moderate review (approve/reject)
+   * Moderate a review (approve/reject). Scoped to the creator's own products.
    */
   moderate: creatorProcedure
     .input(
@@ -63,9 +109,21 @@ export const reviewRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      throw new TRPCError({
-        code: "NOT_IMPLEMENTED",
-        message: "review.moderate - TODO: implement review moderation",
+      const review = await ctx.db.review.findFirst({
+        where: {
+          id: input.reviewId,
+          product: { workspaceId: ctx.workspace.id },
+        },
+        select: { id: true },
+      });
+
+      if (!review) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Review not found" });
+      }
+
+      return ctx.db.review.update({
+        where: { id: input.reviewId },
+        data: { status: input.status },
       });
     }),
 

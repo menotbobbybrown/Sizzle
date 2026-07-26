@@ -1,54 +1,80 @@
 import { NextResponse } from "next/server";
-import { stripe } from "@/lib/stripe";
+import { stripe, computeApplicationFee } from "@/lib/stripe";
 import { env } from "@/env";
 import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
 import { checkoutLimiter, getClientIP, checkRateLimit } from "@/lib/ratelimit";
 
+/**
+ * Server-side checkout entry point used by the storefront's progressively
+ * enhanced "Buy now" form. It accepts either:
+ *   - a native `application/x-www-form-urlencoded` submit (no JS) → responds
+ *     with a 303 redirect straight to Stripe Checkout, and
+ *   - a JSON `fetch` (PWYW / discounts) → responds with `{ url }`.
+ *
+ * It mirrors the tRPC `checkout.createSession` procedure exactly (same metadata,
+ * same platform fee, same success page) so the two entry points can never drift.
+ */
+type CheckoutBody = {
+  productId?: string;
+  customAmount?: number;
+  discountCode?: string;
+};
+
+async function parseBody(req: Request): Promise<{ body: CheckoutBody; wantsRedirect: boolean }> {
+  const contentType = req.headers.get("content-type") ?? "";
+
+  // Native HTML form submit → redirect the browser to Stripe.
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data")
+  ) {
+    const form = await req.formData();
+    const rawAmount = form.get("customAmount");
+    return {
+      wantsRedirect: true,
+      body: {
+        productId: (form.get("productId") as string) || undefined,
+        discountCode: (form.get("discountCode") as string) || undefined,
+        customAmount: rawAmount ? Number(rawAmount) : undefined,
+      },
+    };
+  }
+
+  // Programmatic fetch → return JSON.
+  const json = (await req.json().catch(() => ({}))) as CheckoutBody;
+  return { wantsRedirect: false, body: json };
+}
+
+function fail(message: string, status: number, wantsRedirect: boolean): NextResponse {
+  if (wantsRedirect) {
+    return NextResponse.redirect(
+      `${env.NEXT_PUBLIC_APP_URL}/checkout/error?message=${encodeURIComponent(message)}`,
+      303
+    );
+  }
+  return NextResponse.json({ error: message }, { status });
+}
+
 export async function POST(req: Request) {
   // Apply rate limiting
   const ip = getClientIP(req);
   const rateLimitResponse = await checkRateLimit(checkoutLimiter, ip);
-  
+
   if (rateLimitResponse) {
     return rateLimitResponse;
   }
 
+  let wantsRedirect = false;
+
   try {
-    const { productId, customAmount, discountCode } = await req.json();
+    const parsed = await parseBody(req);
+    wantsRedirect = parsed.wantsRedirect;
+    const { productId, customAmount, discountCode } = parsed.body;
 
     if (!productId || typeof productId !== "string") {
-      return NextResponse.json({ error: "Missing productId" }, { status: 400 });
+      return fail("Missing productId", 400, wantsRedirect);
     }
-
-    // Validate custom amount for PWYW products
-    if (customAmount !== undefined) {
-      const product = await db.product.findUnique({
-        where: { id: productId },
-      });
-
-      if (!product) {
-        return NextResponse.json({ error: "Product not found" }, { status: 404 });
-      }
-
-      if (product.pricingType === "PWYW") {
-        const minPrice = product.minPrice ? Number(product.minPrice) : 1;
-        if (customAmount < minPrice) {
-          return NextResponse.json(
-            { error: `Minimum price is $${minPrice}` },
-            { status: 400 }
-          );
-        }
-      } else if (product.pricingType === "FREE") {
-        return NextResponse.json(
-          { error: "This product is free" },
-          { status: 400 }
-        );
-      }
-    }
-
-    const session_auth = await auth();
-    const userId = session_auth?.user?.id ?? "";
 
     const product = await db.product.findUnique({
       where: { id: productId },
@@ -56,31 +82,50 @@ export async function POST(req: Request) {
     });
 
     if (!product || product.status !== "PUBLISHED") {
-      return NextResponse.json({ error: "Product not found" }, { status: 404 });
+      return fail("Product not found", 404, wantsRedirect);
     }
 
-    if (!product.workspace.stripeAccountId) {
-      return NextResponse.json(
-        { error: "This creator cannot accept payments yet. Please contact them or try again later." },
-        { status: 400 }
-      );
+    // Validate custom amount for PWYW products
+    if (customAmount !== undefined) {
+      if (product.pricingType === "PWYW") {
+        const minPrice = product.minPrice ? Number(product.minPrice) : 1;
+        if (customAmount < minPrice) {
+          return fail(`Minimum price is $${minPrice}`, 400, wantsRedirect);
+        }
+      } else if (product.pricingType === "FREE") {
+        return fail("This product is free", 400, wantsRedirect);
+      }
     }
+
+    const session_auth = await auth();
+    const userId = session_auth?.user?.id ?? "";
 
     // Build line items based on pricing type
     let unitAmount: number;
-    
+
     if (product.pricingType === "PWYW" && customAmount) {
       // Use custom amount for PWYW products
       unitAmount = Math.round(customAmount * 100);
     } else if (product.pricingType === "FREE") {
-      // Handle free products - redirect to direct access
-      return NextResponse.json({ 
-        url: `${env.NEXT_PUBLIC_APP_URL}/enroll/${productId}?free=true`,
-        isFree: true 
-      });
+      // Free products don't go through Stripe — grant access directly.
+      const freeUrl = `${env.NEXT_PUBLIC_APP_URL}/enroll/${productId}?free=true`;
+      return wantsRedirect
+        ? NextResponse.redirect(freeUrl, 303)
+        : NextResponse.json({ url: freeUrl, isFree: true });
     } else {
       // Fixed price
       unitAmount = Math.round(Number(product.price) * 100);
+    }
+
+    if (
+      !product.workspace.stripeAccountId ||
+      product.workspace.stripeAccountStatus !== "connected"
+    ) {
+      return fail(
+        "This creator cannot accept payments yet. Please contact them or try again later.",
+        400,
+        wantsRedirect
+      );
     }
 
     // Apply discount if provided
@@ -103,13 +148,15 @@ export async function POST(req: Request) {
       }
     }
 
-    // Read affiliate code from cookie
+    // Read affiliate code from cookie (captured by middleware as `sizzle_ref`)
     const cookieHeader = req.headers.get("cookie") || "";
     const affiliateCode = cookieHeader
       .split(";")
       .map((c) => c.trim())
       .find((c) => c.startsWith("sizzle_ref="))
       ?.split("=")[1];
+
+    const applicationFee = computeApplicationFee(unitAmount, product.workspace.plan);
 
     const sessionParams: Parameters<typeof stripe.checkout.sessions.create>[0] = {
       line_items: [
@@ -126,9 +173,10 @@ export async function POST(req: Request) {
         },
       ],
       mode: "payment",
-      success_url: `${env.NEXT_PUBLIC_APP_URL}/store/${product.workspace.handle}/p/${product.slug}?success=true`,
+      success_url: `${env.NEXT_PUBLIC_APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}&product=${product.slug}`,
       cancel_url: `${env.NEXT_PUBLIC_APP_URL}/store/${product.workspace.handle}/p/${product.slug}?canceled=true`,
       payment_intent_data: {
+        ...(applicationFee > 0 ? { application_fee_amount: applicationFee } : {}),
         transfer_data: {
           destination: product.workspace.stripeAccountId,
         },
@@ -145,17 +193,15 @@ export async function POST(req: Request) {
 
     const session = await stripe.checkout.sessions.create(sessionParams);
 
-    return NextResponse.json({ url: session.url });
+    if (!session.url) {
+      return fail("Failed to create checkout session", 500, wantsRedirect);
+    }
+
+    return wantsRedirect
+      ? NextResponse.redirect(session.url, 303)
+      : NextResponse.json({ url: session.url });
   } catch (error) {
     console.error("Checkout error:", error);
-    return NextResponse.json(
-      { error: "Failed to create checkout session" },
-      { status: 500 }
-    );
+    return fail("Failed to create checkout session", 500, wantsRedirect);
   }
-}/home/engine/.bashrc: line 1: syntax error near unexpected token `('
-/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
-/home/engine/.bashrc: line 1: syntax error near unexpected token `('
-/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
-/home/engine/.bashrc: line 1: syntax error near unexpected token `('
-/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+}

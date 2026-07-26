@@ -3,11 +3,10 @@ import { db } from "@/lib/db";
 import { stripe } from "@/lib/stripe";
 import { INNGEST_EVENTS } from "@/lib/inngest";
 import { WorkspacePlan } from "@prisma/client";
-import { revalidateTag } from "next/cache";
+import { revalidateTag } from "@/lib/revalidate";
 
 export const stripeWebhookHandler = inngest.createFunction(
-  { id: "stripe-webhook-handler", name: "Stripe Webhook Handler" },
-  { event: "stripe/event" },
+  { id: "stripe-webhook-handler", name: "Stripe Webhook Handler", triggers: [{ event: "stripe/event" }] },
   async ({ event, step }) => {
     const { type, event: stripeEvent } = event.data;
     const session = stripeEvent.data.object as any;
@@ -67,11 +66,21 @@ async function handleCheckoutCompleted(session: any) {
   const amount = session.amount_total / 100;
   const currency = session.currency.toUpperCase();
 
-  // Create the order
+  // Idempotency: Stripe delivers webhooks at least once, so the same
+  // `checkout.session.completed` can arrive twice. `Order.stripeSessionId` is
+  // unique, and letting the insert throw would mark the whole webhook FAILED
+  // and trigger endless Stripe retries. Instead we short-circuit cleanly if the
+  // order already exists.
+  const existingOrder = await db.order.findUnique({
+    where: { stripeSessionId: session.id },
+  });
+  if (existingOrder) {
+    return;
+  }
+
+  // Create the order (fully checked create so relations and scalar FKs don't mix)
   const order = await db.order.create({
     data: {
-      workspaceId,
-      userId: userId || null,
       isGuest: !userId,
       customerEmail,
       customerName,
@@ -80,6 +89,8 @@ async function handleCheckoutCompleted(session: any) {
       status: "PAID",
       stripeSessionId: session.id,
       stripePaymentIntentId: session.payment_intent,
+      workspace: { connect: { id: workspaceId } },
+      ...(userId ? { user: { connect: { id: userId } } } : {}),
       ...(discountCode
         ? {
             discountCode: {

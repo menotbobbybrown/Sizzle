@@ -9,8 +9,44 @@ import { RESERVED_HANDLES } from "@/config/route-map";
  * 3. Handle validation (alphanumeric + hyphens, no @ prefix in DB)
  * 4. Affiliate ref= query param capture → sizzle_ref cookie
  */
+/**
+ * Routes that require an authenticated session. This is a fast, edge-side gate
+ * that redirects anonymous visitors before the page renders. It is intentionally
+ * only a cookie-presence check — the authoritative session + role verification
+ * happens in the server-component layouts (`/dashboard`, `/admin`) and in the
+ * tRPC procedures. Together they give defense in depth without needing database
+ * access at the edge (NextAuth uses database sessions here).
+ */
+const PROTECTED_PREFIXES = ["/dashboard", "/admin", "/onboarding"];
+
+/**
+ * NextAuth v5 session cookie names. The `__Secure-` prefixed variant is used
+ * whenever cookies are sent over HTTPS (i.e. production).
+ */
+const SESSION_COOKIES = [
+  "authjs.session-token",
+  "__Secure-authjs.session-token",
+];
+
+function hasSessionCookie(request: NextRequest): boolean {
+  return SESSION_COOKIES.some((name) => request.cookies.has(name));
+}
+
 export function middleware(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;
+
+  // ── Auth gate ────────────────────────────────────────────────────
+  // Redirect unauthenticated visitors away from protected areas early.
+  const isProtected = PROTECTED_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
+  if (isProtected && !hasSessionCookie(request)) {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.search = "";
+    loginUrl.searchParams.set("callbackUrl", pathname);
+    return NextResponse.redirect(loginUrl);
+  }
 
   // ── Affiliate ref capture ────────────────────────────────────────
   // If query param ref exists and passes basic validation, set cookie

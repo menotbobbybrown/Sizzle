@@ -1,7 +1,11 @@
 import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { hashToken } from "../src/lib/tokens";
 
-const prisma = new PrismaClient();
+const adapter = new PrismaPg({
+  connectionString: process.env.DIRECT_DATABASE_URL || process.env.DATABASE_URL,
+});
+const prisma = new PrismaClient({ adapter });
 
 async function main() {
   console.log("🌱 Seeding database...");
@@ -296,9 +300,11 @@ async function main() {
         conversionRate: orderCount > 0 ? (orderCount / visitorCount) * 100 : 0,
         visitorCount,
         pageViewCount,
-        topProducts: JSON.stringify([
+        // Prisma Json columns take a JS value directly — pre-stringifying would
+        // store a double-encoded string.
+        topProducts: [
           { productId: courseProduct.id, name: courseProduct.name, revenue: gmv, orders: orderCount },
-        ]),
+        ],
         emailSent: Math.floor(Math.random() * 50) + 10,
         emailOpened: Math.floor(Math.random() * 30) + 5,
         emailClicked: Math.floor(Math.random() * 10) + 2,

@@ -2,6 +2,8 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, publicProcedure, creatorProcedure } from "@/server/api/trpc";
 import { hashToken } from "@/lib/tokens";
+import { generateDownloadUrl } from "@/lib/r2";
+import { env } from "@/env";
 
 export const downloadRouter = createTRPCRouter({
   /**
@@ -44,7 +46,7 @@ export const downloadRouter = createTRPCRouter({
 
       // Check expiration
       if (accessToken.expiresAt && accessToken.expiresAt < new Date()) {
-        throw new TRPCError({ code: "GONE", message: "This download link has expired" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: "This download link has expired" });
       }
 
       // Check max uses
@@ -90,25 +92,40 @@ export const downloadRouter = createTRPCRouter({
         throw new TRPCError({ code: "FORBIDDEN", message: "Download link revoked" });
       }
 
+      if (accessToken.expiresAt && accessToken.expiresAt < new Date()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Download link has expired" });
+      }
+
       if (accessToken.useCount >= accessToken.maxUses) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Download limit reached" });
       }
 
-      // Increment use count and update last used
-      await ctx.db.accessToken.update({
-        where: { tokenHash },
+      // Atomic, race-safe consume: only increment if a slot is still free and
+      // the token is still valid. If no row matches, someone else took the last use.
+      const updated = await ctx.db.accessToken.updateMany({
+        where: {
+          tokenHash,
+          revokedAt: null,
+          useCount: { lt: accessToken.maxUses },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
         data: {
           useCount: { increment: 1 },
           lastUsedAt: new Date(),
         },
       });
 
+      if (updated.count === 0) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Download limit reached" });
+      }
+
       return { success: true, useCount: accessToken.useCount + 1 };
     }),
 
   /**
-   * Generate download URL (returns signed URL)
-   * This would integrate with R2/S3 for actual file delivery
+   * Generate a short-lived signed download URL and atomically consume one use.
+   * Returns a real R2 presigned URL for file products, or the enrollment URL for
+   * courses — mirroring the `/api/access/[token]` route.
    */
   getDownloadUrl: publicProcedure
     .input(z.object({ token: z.string() }))
@@ -117,7 +134,7 @@ export const downloadRouter = createTRPCRouter({
 
       const accessToken = await ctx.db.accessToken.findUnique({
         where: { tokenHash },
-        include: { product: true },
+        include: { product: { include: { workspace: true } } },
       });
 
       if (!accessToken) {
@@ -128,11 +145,48 @@ export const downloadRouter = createTRPCRouter({
         throw new TRPCError({ code: "FORBIDDEN", message: "Download link revoked" });
       }
 
-      // TODO: Generate signed URL from R2/S3
-      // For now, return a placeholder URL
-      const downloadUrl = `/api/access/${input.token}/file`;
+      if (accessToken.expiresAt && accessToken.expiresAt < new Date()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Download link has expired" });
+      }
 
-      return { url: downloadUrl, expiresIn: 300 }; // 5 minutes
+      if (accessToken.useCount >= accessToken.maxUses) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Download limit reached" });
+      }
+
+      // Atomically consume one use before handing out the signed URL.
+      const consumed = await ctx.db.accessToken.updateMany({
+        where: {
+          tokenHash,
+          revokedAt: null,
+          useCount: { lt: accessToken.maxUses },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+        data: { useCount: { increment: 1 }, lastUsedAt: new Date() },
+      });
+
+      if (consumed.count === 0) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Download limit reached" });
+      }
+
+      const expiresIn = 300; // 5 minutes
+
+      if (accessToken.product.fileKey) {
+        const url = await generateDownloadUrl(
+          accessToken.product.fileKey,
+          accessToken.product.fileName ?? accessToken.product.name,
+          expiresIn
+        );
+        return { url, expiresIn };
+      }
+
+      if (accessToken.product.type === "COURSE") {
+        return {
+          url: `${env.NEXT_PUBLIC_APP_URL}/${accessToken.product.workspace.handle}?enroll=${accessToken.product.slug}`,
+          expiresIn,
+        };
+      }
+
+      throw new TRPCError({ code: "NOT_FOUND", message: "No downloadable file for this product" });
     }),
 
   /**

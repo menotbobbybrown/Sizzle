@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure, protectedProcedure } from "@/server/api/trpc";
-import { stripe } from "@/lib/stripe";
+import { stripe, computeApplicationFee } from "@/lib/stripe";
 import { env } from "@/env";
 import { TRPCError } from "@trpc/server";
 import { checkoutLimiter, checkRateLimit } from "@/lib/ratelimit";
@@ -19,7 +19,7 @@ export const checkoutRouter = createTRPCRouter({
     )
     .mutation(async ({ ctx, input }) => {
       // Apply rate limiting
-      const ip = ctx.headers?.get("x-forwarded-for")?.split(",")[0] || "127.0.0.1";
+      const ip = ctx.req?.headers.get("x-forwarded-for")?.split(",")[0] || "127.0.0.1";
       const rateLimitResponse = await checkRateLimit(checkoutLimiter, ip);
       
       if (rateLimitResponse) {
@@ -38,7 +38,10 @@ export const checkoutRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND", message: "Product not found" });
       }
 
-      if (!product.workspace.stripeAccountId) {
+      if (
+        !product.workspace.stripeAccountId ||
+        product.workspace.stripeAccountStatus !== "connected"
+      ) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: "This creator cannot accept payments yet.",
@@ -120,6 +123,16 @@ export const checkoutRouter = createTRPCRouter({
         cancel_url: cancelUrl,
         customer_email: ctx.session?.user?.email ?? undefined,
         payment_intent_data: {
+          // Platform fee (destination charge): the buyer pays `unitAmount`, the
+          // creator receives it minus our `application_fee_amount`.
+          ...(computeApplicationFee(unitAmount, product.workspace.plan) > 0
+            ? {
+                application_fee_amount: computeApplicationFee(
+                  unitAmount,
+                  product.workspace.plan
+                ),
+              }
+            : {}),
           transfer_data: {
             destination: product.workspace.stripeAccountId,
           },
@@ -245,7 +258,10 @@ export const checkoutRouter = createTRPCRouter({
             name: item.product.name,
             type: item.product.type,
           })),
-          accessUrl: `${env.NEXT_PUBLIC_APP_URL}/download/${session.metadata?.accessToken ?? ""}`,
+          // Access is delivered by email (a single-use, hashed access-token
+          // link) rather than exposed here — we never surface the raw token
+          // through a query. The confirmation page reflects this.
+          deliveredByEmail: true,
           customerEmail: session.customer_email,
         };
       } catch (error) {

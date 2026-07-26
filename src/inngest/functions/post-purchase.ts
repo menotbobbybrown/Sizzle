@@ -1,6 +1,6 @@
 import { inngest, INNGEST_EVENTS } from "@/lib/inngest";
 import { db } from "@/lib/db";
-import { revalidateTag } from "next/cache";
+import { revalidateTag } from "@/lib/revalidate";
 import { cache } from "@/lib/cache";
 import { sendEmail } from "@/lib/email";
 import { getPusher, PUSHER_CHANNELS, PUSHER_EVENTS } from "@/lib/pusher";
@@ -13,25 +13,30 @@ import { stripeWebhookHandler } from "./stripe-webhooks";
 // ============================================================
 
 export const postPurchaseFlow = inngest.createFunction(
-  { id: "post-purchase-flow", name: "Post-Purchase Flow" },
-  { event: INNGEST_EVENTS.ORDER_PAID },
+  { id: "post-purchase-flow", name: "Post-Purchase Flow", triggers: [{ event: INNGEST_EVENTS.ORDER_PAID }] },
   async ({ event, step }) => {
     const { orderId, workspaceId, userId, productId } = event.data;
-    
-    // Step 1: Create fulfillment (access token, enrollment)
-    await step.run("Create Fulfillment", async () => {
+
+    // Step 1: Create fulfillment (access token, enrollment).
+    //
+    // The raw access token is generated here and returned from the step so the
+    // email step can build a working access link. We only ever persist the
+    // token's SHA-256 hash; the raw value lives solely in this function's step
+    // memo (short-lived) and in the receipt email. `step.run` memoizes its
+    // result on success, so a retry never mints a second token.
+    const fulfillment = await step.run("Create Fulfillment", async () => {
       const product = await db.product.findUnique({
         where: { id: productId },
       });
-      
+
       if (!product) {
         throw new Error(`Product ${productId} not found`);
       }
-      
+
       // Generate access token for digital fulfillment
       const rawToken = generateToken();
       const tokenHash = hashToken(rawToken);
-      
+
       await db.accessToken.create({
         data: {
           tokenHash,
@@ -43,7 +48,7 @@ export const postPurchaseFlow = inngest.createFunction(
           ),
         },
       });
-      
+
       // Create enrollment for course products
       // Only for authenticated users - guests access via AccessToken-based path
       if (product.type === "COURSE" && userId) {
@@ -64,8 +69,11 @@ export const postPurchaseFlow = inngest.createFunction(
       }
       // For guest course purchases, access is provided via AccessToken link
       // No user enrollment is created, but the token grants access to course content
-      
-      return { tokenCreated: true, enrollmentCreated: product.type === "COURSE" && !!userId };
+
+      return {
+        rawToken,
+        enrollmentCreated: product.type === "COURSE" && !!userId,
+      };
     });
     
     // Step 2: Send purchase email (retryable)
@@ -82,7 +90,7 @@ export const postPurchaseFlow = inngest.createFunction(
         throw new Error(`Order ${orderId} not found`);
       }
       
-      const accessUrl = `${env.NEXT_PUBLIC_APP_URL}/api/access/${event.data.accessToken || ""}`;
+      const accessUrl = `${env.NEXT_PUBLIC_APP_URL}/api/access/${fulfillment.rawToken}`;
       const productNames = order.items.map(item => item.product.name).join(", ");
       
       await sendEmail({
@@ -276,8 +284,7 @@ export const postPurchaseFlow = inngest.createFunction(
 // ============================================================
 
 export const bookingCreatedFlow = inngest.createFunction(
-  { id: "booking-created-flow", name: "Booking Created Flow" },
-  { event: INNGEST_EVENTS.BOOKING_CREATED },
+  { id: "booking-created-flow", name: "Booking Created Flow", triggers: [{ event: INNGEST_EVENTS.BOOKING_CREATED }] },
   async ({ event, step }) => {
     const { bookingId, workspaceId } = event.data;
     
@@ -349,8 +356,7 @@ export const bookingCreatedFlow = inngest.createFunction(
 // ============================================================
 
 export const bookingCancelledFlow = inngest.createFunction(
-  { id: "booking-cancelled-flow", name: "Booking Cancelled Flow" },
-  { event: INNGEST_EVENTS.BOOKING_CANCELLED },
+  { id: "booking-cancelled-flow", name: "Booking Cancelled Flow", triggers: [{ event: INNGEST_EVENTS.BOOKING_CANCELLED }] },
   async ({ event, step }) => {
     const { bookingId, workspaceId, reason } = event.data;
     
@@ -414,8 +420,7 @@ export const bookingCancelledFlow = inngest.createFunction(
 // ============================================================
 
 export const subscriptionCreatedFlow = inngest.createFunction(
-  { id: "subscription-created-flow", name: "Subscription Created Flow" },
-  { event: INNGEST_EVENTS.SUBSCRIPTION_CREATED },
+  { id: "subscription-created-flow", name: "Subscription Created Flow", triggers: [{ event: INNGEST_EVENTS.SUBSCRIPTION_CREATED }] },
   async ({ event, step }) => {
     const { subscriptionId, userId, workspaceId } = event.data;
     
@@ -458,8 +463,7 @@ export const subscriptionCreatedFlow = inngest.createFunction(
 // ============================================================
 
 export const subscriptionCancelledFlow = inngest.createFunction(
-  { id: "subscription-cancelled-flow", name: "Subscription Cancelled Flow" },
-  { event: INNGEST_EVENTS.SUBSCRIPTION_CANCELED },
+  { id: "subscription-cancelled-flow", name: "Subscription Cancelled Flow", triggers: [{ event: INNGEST_EVENTS.SUBSCRIPTION_CANCELED }] },
   async ({ event, step }) => {
     const { subscriptionId, userId } = event.data;
     
@@ -502,8 +506,7 @@ export const subscriptionCancelledFlow = inngest.createFunction(
 // ============================================================
 
 export const courseCompletedFlow = inngest.createFunction(
-  { id: "course-completed-flow", name: "Course Completed Flow" },
-  { event: INNGEST_EVENTS.COURSE_COMPLETED },
+  { id: "course-completed-flow", name: "Course Completed Flow", triggers: [{ event: INNGEST_EVENTS.COURSE_COMPLETED }] },
   async ({ event, step }) => {
     const { enrollmentId, userId, productId } = event.data;
     
@@ -566,3 +569,4 @@ export const inngestFunctions = [
   subscriptionCancelledFlow,
   courseCompletedFlow,
   stripeWebhookHandler,
+];

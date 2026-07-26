@@ -1,8 +1,31 @@
-export default function AdminLayout({
+import { redirect } from "next/navigation";
+
+import { auth } from "@/lib/auth";
+
+/**
+ * The admin console is platform-level and must never render for a
+ * non-administrator. We enforce that here, in the layout, so every page under
+ * `/admin/*` inherits the guard — there is no per-page opt-in to forget.
+ *
+ * An unauthenticated visitor is sent to sign in (with a callback back to the
+ * page they wanted); an authenticated non-admin is bounced to their dashboard
+ * rather than shown a 403, so we never confirm the console exists to them.
+ */
+export default async function AdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const session = await auth();
+
+  if (!session?.user) {
+    redirect("/login?callbackUrl=/admin");
+  }
+
+  if (session.user.role !== "ADMIN") {
+    redirect("/dashboard");
+  }
+
   return (
     <div className="min-h-screen flex">
       <aside className="w-64 border-r border-zinc-200 bg-zinc-900 text-white flex flex-col">
