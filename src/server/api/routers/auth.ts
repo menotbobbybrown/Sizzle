@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { type OnboardingStep } from "@prisma/client";
 import { createTRPCRouter, publicProcedure, protectedProcedure } from "@/server/api/trpc";
 import { isReservedHandle } from "@/config/route-map";
 
@@ -200,14 +201,17 @@ export const authRouter = createTRPCRouter({
 
       // Determine next step
       const stepOrder = ["ACCOUNT", "HANDLE", "PAYOUT", "BRANDING"] as const;
-      const currentIndex = stepOrder.indexOf(onboarding.step);
-      const nextStep = stepOrder[currentIndex + 1] ?? "COMPLETED";
+      type FlowStep = (typeof stepOrder)[number];
+      const currentIndex = stepOrder.indexOf(onboarding.step as FlowStep);
+      // `.at()` returns `FlowStep | undefined`, so the `?? "COMPLETED"` fallback
+      // is reachable in the type — otherwise TS narrows away "COMPLETED".
+      const nextStep: OnboardingStep = stepOrder.at(currentIndex + 1) ?? "COMPLETED";
 
       const updated = await ctx.db.onboardingState.update({
         where: { userId: ctx.session.user.id },
         data: {
           ...updateData,
-          step: nextStep === "COMPLETED" ? "COMPLETED" : nextStep,
+          step: nextStep,
           completedAt: nextStep === "COMPLETED" ? new Date() : undefined,
         },
       });

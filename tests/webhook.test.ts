@@ -1,159 +1,69 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
-// Mock the database
-vi.mock("@/lib/db", () => ({
-  db: {
-    webhookEvent: {
-      findUnique: vi.fn(),
-      upsert: vi.fn(),
-      update: vi.fn(),
-    },
-    order: {
-      findUnique: vi.fn(),
-      create: vi.fn(),
-    },
-    orderItem: {
-      create: vi.fn(),
-    },
-    payment: {
-      create: vi.fn(),
-    },
-    memberSubscription: {
-      findUnique: vi.fn(),
-      update: vi.fn(),
-    },
+// `@/lib/stripe` instantiates the Stripe client from env at import time, so we
+// provide a minimal, valid-looking env before importing it.
+vi.mock("@/env", () => ({
+  env: {
+    STRIPE_SECRET_KEY: "sk_test_123",
+    NODE_ENV: "test",
   },
 }));
 
-// Mock Inngest
-vi.mock("@/lib/inngest", () => ({
-  sendInngestEvent: vi.fn().mockResolvedValue({ ids: ["test-id"] }),
-  INNGEST_EVENTS: {
-    ORDER_PAID: "order/paid",
-    SUBSCRIPTION_CREATED: "subscription/created",
-    SUBSCRIPTION_CANCELED: "subscription/canceled",
-    SUBSCRIPTION_RENEWED: "subscription/renewed",
-    INVOICE_PAYMENT_FAILED: "invoice/payment_failed",
-  },
-}));
+import { computeApplicationFee, getPlatformFeePercent } from "@/lib/stripe";
+import { generateToken, hashToken } from "@/lib/tokens";
 
-// Mock Stripe
-vi.mock("@/lib/stripe", () => ({
-  stripe: {
-    webhooks: {
-      constructEvent: vi.fn(),
-    },
-  },
-}));
-
-describe("Stripe Webhook Idempotency", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe("Platform fee (destination-charge application fee)", () => {
+  it("charges the free tier 5% and paid tiers nothing", () => {
+    expect(getPlatformFeePercent("FREE")).toBe(5);
+    expect(getPlatformFeePercent("CREATOR")).toBe(0);
+    expect(getPlatformFeePercent("PRO")).toBe(0);
+    expect(getPlatformFeePercent("BUSINESS")).toBe(0);
   });
 
-  it("should return idempotent response for already processed events", async () => {
-    const { db } = await import("@/lib/db");
-    
-    // Mock that event was already processed
-    db.webhookEvent.findUnique.mockResolvedValue({
-      id: "event-1",
-      eventId: "evt_test123",
-      source: "stripe",
-      type: "checkout.session.completed",
-      status: "PROCESSED",
-      payload: {},
-      processedAt: new Date(),
-      createdAt: new Date(),
-    });
-
-    const existingEvent = await db.webhookEvent.findUnique({
-      where: { eventId_source: { eventId: "evt_test123", source: "stripe" } },
-    });
-
-    expect(existingEvent?.status).toBe("PROCESSED");
-    // In the actual route handler, this would return early with idempotent: true
+  it("computes the fee in cents for a free-tier sale", () => {
+    // $50.00 => 5000 cents, 5% => 250 cents
+    expect(computeApplicationFee(5000, "FREE")).toBe(250);
   });
 
-  it("should create webhook event record on new event", async () => {
-    const { db } = await import("@/lib/db");
-    
-    db.webhookEvent.findUnique.mockResolvedValue(null);
-    db.webhookEvent.upsert.mockResolvedValue({
-      id: "event-2",
-      eventId: "evt_new",
-      source: "stripe",
-      type: "checkout.session.completed",
-      status: "PENDING",
-      payload: {},
-      createdAt: new Date(),
-    });
-
-    const webhookEvent = await db.webhookEvent.upsert({
-      where: { eventId_source: { eventId: "evt_new", source: "stripe" } },
-      update: { payload: {} },
-      create: {
-        eventId: "evt_new",
-        source: "stripe",
-        type: "checkout.session.completed",
-        status: "PENDING",
-        payload: {},
-      },
-    });
-
-    expect(webhookEvent.status).toBe("PENDING");
-    expect(webhookEvent.eventId).toBe("evt_new");
+  it("returns 0 for paid tiers", () => {
+    expect(computeApplicationFee(5000, "PRO")).toBe(0);
   });
 
-  it("should not create duplicate orders for same Stripe session", async () => {
-    const { db } = await import("@/lib/db");
-    
-    // Order already exists
-    db.order.findUnique.mockResolvedValue({
-      id: "order-existing",
-      stripeSessionId: "cs_test123",
-      status: "PAID",
-    });
+  it("returns 0 for a zero-amount charge", () => {
+    expect(computeApplicationFee(0, "FREE")).toBe(0);
+  });
 
-    const existingOrder = await db.order.findUnique({
-      where: { stripeSessionId: "cs_test123" },
-    });
+  it("rounds to the nearest cent", () => {
+    // 999 cents * 5% = 49.95 => 50
+    expect(computeApplicationFee(999, "FREE")).toBe(50);
+  });
 
-    expect(existingOrder).not.toBeNull();
-    // In actual handler, this would skip order creation
+  it("treats lapsed subscriptions as free-tier and trials as paid", () => {
+    expect(getPlatformFeePercent("PAST_DUE")).toBe(5);
+    expect(getPlatformFeePercent("CANCELED")).toBe(5);
+    expect(getPlatformFeePercent("TRIALING")).toBe(0);
   });
 });
 
-describe("Subscription Event Updates", () => {
-  it("should map Stripe subscription status to our enum", () => {
-    const statusMappings: Record<string, string> = {
-      active: "ACTIVE",
-      past_due: "PAST_DUE",
-      canceled: "CANCELED",
-      unpaid: "UNPAID",
-      incomplete: "INCOMPLETE",
-      incomplete_expired: "INCOMPLETE_EXPIRED",
-      trialing: "TRIALING",
-    };
-
-    Object.entries(statusMappings).forEach(([stripeStatus, expectedEnum]) => {
-      expect(expectedEnum).toMatch(/^(ACTIVE|PAST_DUE|CANCELED|UNPAID|INCOMPLETE|INCOMPLETE_EXPIRED|TRIALING)$/);
-    });
+describe("Access tokens", () => {
+  it("hashing is deterministic (so we can look up by hash)", () => {
+    const token = generateToken();
+    expect(hashToken(token)).toBe(hashToken(token));
   });
 
-  it("should update subscription on payment failed", async () => {
-    const { db } = await import("@/lib/db");
-    
-    db.memberSubscription.findUnique.mockResolvedValue({
-      id: "sub-1",
-      stripeSubscriptionId: "sub_stripe123",
-      userId: "user-1",
-      status: "PAST_DUE",
-    });
+  it("never stores the raw token — the hash differs from the token", () => {
+    const token = generateToken();
+    expect(hashToken(token)).not.toBe(token);
+  });
 
-    const subscription = await db.memberSubscription.findUnique({
-      where: { stripeSubscriptionId: "sub_stripe123" },
-    });
+  it("generates unique, high-entropy tokens", () => {
+    const tokens = new Set(Array.from({ length: 1000 }, () => generateToken()));
+    expect(tokens.size).toBe(1000);
+    // 32 random bytes hex-encoded => 64 chars
+    expect(generateToken()).toMatch(/^[a-f0-9]{64}$/);
+  });
 
-    expect(subscription?.status).toBe("PAST_DUE");
+  it("produces a SHA-256 hex digest", () => {
+    expect(hashToken("hello")).toMatch(/^[a-f0-9]{64}$/);
   });
 });

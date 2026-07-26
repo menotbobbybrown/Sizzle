@@ -50,15 +50,29 @@ export async function GET(req: Request) {
       return NextResponse.redirect(`${env.APP_URL}/dashboard?error=no_workspace`);
     }
 
+    // Verify the account can actually accept charges before marking it ready.
+    // Connecting via OAuth does NOT guarantee onboarding is complete — a creator
+    // may still owe Stripe verification details. Marking a not-yet-enabled
+    // account as "connected" would let us create checkouts that fail to transfer.
+    const account = await stripe.accounts.retrieve(stripeAccountId);
+    const status = account.charges_enabled
+      ? "connected"
+      : account.details_submitted
+        ? "pending_verification"
+        : "onboarding_incomplete";
+
     await db.workspace.update({
       where: { id: workspaceMember.workspaceId },
       data: {
         stripeAccountId,
-        stripeAccountStatus: "connected",
+        stripeAccountStatus: status,
       },
     });
 
-    return NextResponse.redirect(`${env.APP_URL}/dashboard/settings?stripe=success`);
+    const redirectStatus = account.charges_enabled ? "success" : "incomplete";
+    return NextResponse.redirect(
+      `${env.APP_URL}/dashboard/settings?stripe=${redirectStatus}`
+    );
   } catch (error) {
     console.error("Stripe Connect error:", error);
     return NextResponse.redirect(`${env.APP_URL}/dashboard/settings?stripe=error`);

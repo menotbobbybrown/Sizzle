@@ -5,13 +5,14 @@ import { db } from "@/server/db";
 import { cache } from "@/lib/cache";
 import { unstable_cache } from "next/cache";
 import { RecentSalesTicker } from "@/components/storefront/RecentSalesTicker";
-import { 
-  Instagram, 
-  Youtube, 
-  Globe, 
-  ArrowRight, 
-  Download, 
-  Video, 
+import {
+  // lucide-react removed brand icons (Instagram/YouTube); use generic marks.
+  Camera as Instagram,
+  Play as Youtube,
+  Globe,
+  ArrowRight,
+  Download,
+  Video,
   Users,
   ExternalLink
 } from "lucide-react";

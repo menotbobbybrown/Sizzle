@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { revalidateTag } from "next/cache";
+import { revalidateTag } from "@/lib/revalidate";
 import { env } from "@/env";
 
 export async function GET(request: NextRequest) {

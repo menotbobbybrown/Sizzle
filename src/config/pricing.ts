@@ -28,6 +28,7 @@ export const PRICING_TIERS = [
       hasWhiteLabel: false,
     },
     trialDays: 14,
+    popular: false,
   },
   {
     id: "pro",
@@ -81,6 +82,7 @@ export const PRICING_TIERS = [
       hasWhiteLabel: true,
     },
     trialDays: 14,
+    popular: false,
   },
 ] as const;
 

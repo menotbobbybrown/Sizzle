@@ -4,7 +4,7 @@ import { createTRPCRouter, publicProcedure, creatorProcedure } from "@/server/ap
 import { ProductType, ProductStatus } from "@prisma/client";
 import { isReservedHandle } from "@/config/route-map";
 import { generatePresignedUrl, generateFileKey } from "@/lib/r2";
-import { revalidateTag } from "next/cache";
+import { revalidateTag } from "@/lib/revalidate";
 import { cache } from "@/lib/cache";
 
 export const productRouter = createTRPCRouter({
@@ -307,8 +307,11 @@ export const productRouter = createTRPCRouter({
 
       const [orderItems, enrollments] = await Promise.all([
         ctx.db.orderItem.findMany({
-          where: { productId: input.id },
-          include: { order: { where: { status: { in: ["PAID", "FULFILLED"] } } } },
+          where: {
+            productId: input.id,
+            order: { status: { in: ["PAID", "FULFILLED"] } },
+          },
+          include: { order: true },
         }),
         ctx.db.enrollment.count({ where: { productId: input.id } }),
       ]);
@@ -370,6 +373,4 @@ export const productRouter = createTRPCRouter({
         fileKey: input.fileKey,
       };
     }),
-});/home/engine/.bashrc: line 1: syntax error near unexpected token `('
-/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
-/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+});

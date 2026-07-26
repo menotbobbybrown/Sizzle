@@ -73,15 +73,17 @@ export const campaignRouter = createTRPCRouter({
 
       if (!campaign) return null;
 
+      // Sends/bounces live on CampaignSend; opens/clicks are engagement events
+      // recorded per-subscriber in EmailEvent.
       const [sent, opened, clicked, bounced] = await Promise.all([
         ctx.db.campaignSend.count({
           where: { campaignId: input.id, status: "SENT" },
         }),
-        ctx.db.campaignSend.count({
-          where: { campaignId: input.id, status: "OPENED" },
+        ctx.db.emailEvent.count({
+          where: { campaignId: input.id, type: "OPENED" },
         }),
-        ctx.db.campaignSend.count({
-          where: { campaignId: input.id, status: "CLICKED" },
+        ctx.db.emailEvent.count({
+          where: { campaignId: input.id, type: "CLICKED" },
         }),
         ctx.db.campaignSend.count({
           where: { campaignId: input.id, status: "BOUNCED" },

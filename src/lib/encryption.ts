@@ -1,22 +1,29 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 import { env } from "@/env";
 
 const ALGORITHM = "aes-256-gcm";
 
 /**
- * Get encryption key from environment or generate a warning
+ * Derive the 32-byte AES-256 key.
+ *
+ * We SHA-256 the configured secret so the key is always exactly 32 bytes
+ * regardless of the secret's length or character encoding (naively slicing the
+ * string could yield the wrong byte length and break the cipher).
  */
 function getEncryptionKey(): Buffer {
   const key = env.ENCRYPTION_KEY;
   if (!key || key.length < 32) {
-    // In development, use a default key (NOT for production!)
-    if (process.env.NODE_ENV === "development") {
-      console.warn("ENCRYPTION_KEY not set, using development key");
-      return Buffer.from("development-key-do-not-use-in-prod!!");
+    // Outside production, fall back to an insecure, clearly-labeled dev key so
+    // local flows work without configuration. Never reached in production.
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("ENCRYPTION_KEY not set; using an insecure development key");
+      return createHash("sha256")
+        .update("development-key-do-not-use-in-prod")
+        .digest();
     }
     throw new Error("ENCRYPTION_KEY must be set and at least 32 characters");
   }
-  return Buffer.from(key.slice(0, 32));
+  return createHash("sha256").update(key).digest();
 }
 
 /**

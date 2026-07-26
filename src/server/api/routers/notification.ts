@@ -1,8 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createTRPCRouter, protectedProcedure, creatorProcedure } from "@/server/api/trpc";
-
-// TODO: Implement notification router fully
+import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
 
 export const notificationRouter = createTRPCRouter({
   /**

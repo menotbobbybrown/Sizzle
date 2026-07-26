@@ -3,7 +3,7 @@ import { Redis } from "@upstash/redis";
 import { env } from "@/env";
 import { NextResponse } from "next/server";
 
-// Create Redis client (optional - will be no-op if not configured)
+// Create Redis client (optional - rate limiting is a no-op if not configured)
 const redis = env.UPSTASH_REDIS_REST_URL && env.UPSTASH_REDIS_REST_TOKEN
   ? new Redis({
       url: env.UPSTASH_REDIS_REST_URL,
@@ -11,51 +11,50 @@ const redis = env.UPSTASH_REDIS_REST_URL && env.UPSTASH_REDIS_REST_TOKEN
     })
   : null;
 
+/** A limiter is `null` when Upstash Redis is not configured. */
+export type MaybeLimiter = Ratelimit | null;
+
+/**
+ * Build a rate limiter, or `null` if Redis isn't configured. Returning `null`
+ * (rather than throwing) lets the app run without Upstash in local/dev while
+ * still enforcing limits wherever Redis is present. Response headers are set
+ * explicitly by {@link checkRateLimit}.
+ */
+function createLimiter(
+  prefix: string,
+  limiter: ReturnType<typeof Ratelimit.slidingWindow>
+): MaybeLimiter {
+  if (!redis) return null;
+  return new Ratelimit({
+    redis,
+    analytics: true,
+    prefix,
+    limiter,
+    ephemeralCache: new Map(),
+  });
+}
+
 // ============================================================
 // RATE LIMITERS
 // ============================================================
 
 // Checkout: 10/minute per IP
-export const checkoutLimiter = new Ratelimit({
-  redis,
-  analytics: true,
-  prefix: "ratelimit:checkout",
-  limiter: Ratelimit.slidingWindow(10, "1 m"),
-  ephemeralCache: new Map(),
-  headers: {
-    remaining: "X-RateLimit-Remaining",
-    reset: "X-RateLimit-Reset",
-    total: "X-RateLimit-Limit",
-  },
-});
+export const checkoutLimiter = createLimiter(
+  "ratelimit:checkout",
+  Ratelimit.slidingWindow(10, "1 m")
+);
 
 // Auth: 5/minute per IP
-export const authLimiter = new Ratelimit({
-  redis,
-  analytics: true,
-  prefix: "ratelimit:auth",
-  limiter: Ratelimit.slidingWindow(5, "1 m"),
-  ephemeralCache: new Map(),
-  headers: {
-    remaining: "X-RateLimit-Remaining",
-    reset: "X-RateLimit-Reset",
-    total: "X-RateLimit-Limit",
-  },
-});
+export const authLimiter = createLimiter(
+  "ratelimit:auth",
+  Ratelimit.slidingWindow(5, "1 m")
+);
 
 // AI Generation: 20/hour per workspace (or fallback to IP)
-export const aiLimiter = new Ratelimit({
-  redis,
-  analytics: true,
-  prefix: "ratelimit:ai",
-  limiter: Ratelimit.slidingWindow(20, "1 h"),
-  ephemeralCache: new Map(),
-  headers: {
-    remaining: "X-RateLimit-Remaining",
-    reset: "X-RateLimit-Reset",
-    total: "X-RateLimit-Limit",
-  },
-});
+export const aiLimiter = createLimiter(
+  "ratelimit:ai",
+  Ratelimit.slidingWindow(20, "1 h")
+);
 
 // ============================================================
 // HELPER FUNCTIONS
@@ -82,10 +81,13 @@ export function getClientIP(request: Request): string {
  * Check rate limit and return response
  */
 export async function checkRateLimit(
-  limiter: Ratelimit,
+  limiter: MaybeLimiter,
   identifier: string,
   options?: { metadata?: Record<string, string> }
 ): Promise<Response | null> {
+  // No limiter configured → allow the request through.
+  if (!limiter) return null;
+
   const { success, remaining, reset, limit } = await limiter.limit(
     identifier,
     options?.metadata
@@ -121,7 +123,7 @@ export async function checkRateLimit(
  */
 export function withRateLimit<T extends Request>(
   handler: (request: T) => Promise<Response>,
-  limiter: Ratelimit,
+  limiter: MaybeLimiter,
   getIdentifier: (request: T) => string
 ) {
   return async (request: T): Promise<Response> => {

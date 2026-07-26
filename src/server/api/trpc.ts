@@ -115,7 +115,23 @@ export const creatorProcedure = protectedProcedure.use(async ({ ctx, next }) => 
 });
 
 /**
- * Admin procedure - requires admin role
+ * Admin procedure - requires the platform-level ADMIN role.
+ *
+ * Distinct from `creatorProcedure`: this gates the internal admin console
+ * (`/admin/*`) and is scoped to the whole platform, not a single workspace.
  */
 export const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.session.user.role !== "ADMIN") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Administrator access required.",
+    });
+  }
+
+  return next({
+    ctx: {
+      ...ctx,
+      session: { ...ctx.session, user: ctx.session.user },
+    },
+  });
+});
