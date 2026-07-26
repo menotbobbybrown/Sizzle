@@ -142,11 +142,14 @@ export const env = createEnv({
     NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
     NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST,
   },
-  // Skip validation during `next build` (page-data collection imports every
-  // route, which would otherwise require every secret at build time) and when
-  // SKIP_ENV_VALIDATION is set. Validation still runs at runtime (`next start`),
-  // so a real deploy fails fast at boot if a required var is missing.
+  // Only enforce env validation during local development, where a missing var
+  // is a mistake worth surfacing immediately. In build and production runtime we
+  // skip it: the root layout imports this module, so a throw here would take down
+  // *every* route (even the error page) and the whole deploy would fail to
+  // respond. Missing vars still surface — as clear, feature-level errors (e.g. a
+  // DB page failing) — instead of a total outage. Set SKIP_ENV_VALIDATION to
+  // force-skip in dev too.
   skipValidation:
     !!process.env.SKIP_ENV_VALIDATION ||
-    process.env.NEXT_PHASE === "phase-production-build",
+    process.env.NODE_ENV !== "development",
 });
