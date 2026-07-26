@@ -5,6 +5,7 @@ import { db } from "@/server/db";
 import { cache } from "@/lib/cache";
 import { unstable_cache } from "next/cache";
 import { RecentSalesTicker } from "@/components/storefront/RecentSalesTicker";
+import { mergeTheme, fontClass, themeCssVars } from "@/lib/storefront/theme";
 import {
   // lucide-react removed brand icons (Instagram/YouTube); use generic marks.
   Camera as Instagram,
@@ -113,19 +114,26 @@ export default async function StorePage({ params }: Props) {
     notFound();
   }
 
-  const theme = (workspace.storefront?.config as any) || {};
-  const primaryColor = theme.primaryColor || "#000000";
-  const accentColor = theme.accentColor || "#f59e0b";
-  const fontFamily = theme.fontFamily || "sans";
-  const layout = theme.layout || "grid";
+  const theme = mergeTheme(workspace.storefront?.config);
+  const { sections } = theme;
+  const accentColor = theme.accentColor;
+  const layout = theme.layout;
+  const heroName = theme.headline || workspace.name;
+  const heroTagline = theme.tagline ?? workspace.bio;
 
-  const featuredProduct = workspace.products.find((p: any) => p.featured);
+  const featuredProduct = sections.showFeatured
+    ? workspace.products.find((p: any) => p.featured)
+    : undefined;
   const otherProducts = workspace.products.filter((p: any) => !p.featured || workspace.products.length === 1);
 
   return (
-    <div 
-      className={`min-h-screen bg-white font-${fontFamily}`}
-      style={{ "--primary": primaryColor, "--accent": accentColor } as any}
+    <div
+      className={`min-h-screen ${fontClass(theme.fontFamily)}`}
+      style={{
+        backgroundColor: theme.backgroundColor,
+        color: theme.textColor,
+        ...themeCssVars(theme),
+      }}
     >
       {/* Banner */}
       {workspace.bannerUrl && (
@@ -151,16 +159,17 @@ export default async function StorePage({ params }: Props) {
             )}
           </div>
           
-          <h1 className="text-3xl font-bold text-zinc-900 mb-1">{workspace.name}</h1>
-          <p className="text-zinc-500 font-medium mb-4">@{workspace.handle}</p>
-          
-          {workspace.bio && (
-            <p className="max-w-2xl text-zinc-600 mb-6 leading-relaxed">
-              {workspace.bio}
+          <h1 className="text-3xl font-bold mb-1">{heroName}</h1>
+          <p className="opacity-60 font-medium mb-4">@{workspace.handle}</p>
+
+          {sections.showBio && heroTagline && (
+            <p className="max-w-2xl opacity-80 mb-6 leading-relaxed">
+              {heroTagline}
             </p>
           )}
 
           {/* Social Links */}
+          {sections.showSocials && (
           <div className="flex flex-wrap justify-center gap-3">
             {workspace.socialConnections.map((social: any) => (
               <a
@@ -198,12 +207,15 @@ export default async function StorePage({ params }: Props) {
               </a>
             )}
           </div>
+          )}
         </div>
 
         {/* Recent Sales Ticker */}
-        <div className="flex justify-center mb-16">
-          <RecentSalesTicker workspaceId={workspace.id} />
-        </div>
+        {sections.showRecentSales && (
+          <div className="flex justify-center mb-16">
+            <RecentSalesTicker workspaceId={workspace.id} />
+          </div>
+        )}
 
         {/* Featured Product */}
         {featuredProduct && (
@@ -233,8 +245,14 @@ export default async function StorePage({ params }: Props) {
                   )}
                 </div>
                 <div className="p-8 md:p-12 flex flex-col justify-center">
-                  <div className="inline-flex items-center gap-2 text-amber-400 text-sm font-bold uppercase tracking-widest mb-4">
-                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  <div
+                    className="inline-flex items-center gap-2 text-sm font-bold uppercase tracking-widest mb-4"
+                    style={{ color: accentColor }}
+                  >
+                    <span
+                      className="w-2 h-2 rounded-full animate-pulse"
+                      style={{ backgroundColor: accentColor }}
+                    />
                     Best Seller
                   </div>
                   <h3 className="text-3xl md:text-4xl font-bold text-white mb-4 group-hover:text-amber-400 transition-colors">
@@ -259,6 +277,7 @@ export default async function StorePage({ params }: Props) {
         )}
 
         {/* Product Listing */}
+        {sections.showAllProducts && (
         <section>
           <div className="flex items-center justify-between mb-8">
             <h2 className="text-2xl font-bold text-zinc-900">All Products</h2>
@@ -344,6 +363,7 @@ export default async function StorePage({ params }: Props) {
             </div>
           )}
         </section>
+        )}
       </main>
 
       {/* Footer */}
