@@ -9,10 +9,14 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    // Used only by the Prisma CLI (migrate / introspect). Prefer the direct,
-    // unpooled connection here so migrations don't run through a pooler; fall
-    // back to the pooled URL when a direct one isn't configured. The runtime
-    // client reads `DATABASE_URL` separately (see src/lib/db.ts).
-    url: process.env["DIRECT_DATABASE_URL"] || process.env["DATABASE_URL"]!,
+    // Used only by the Prisma CLI (migrate / introspect / generate). Prefer the
+    // direct, unpooled connection so migrations don't run through a pooler; fall
+    // back to the pooled URL, then to a dummy DSN so `prisma generate` (which
+    // never connects) can run at build time even when no DB env is present. The
+    // runtime client reads the real `DATABASE_URL` separately (see src/lib/db.ts).
+    url:
+      process.env["DIRECT_DATABASE_URL"] ||
+      process.env["DATABASE_URL"] ||
+      "postgresql://user:pass@localhost:5432/placeholder",
   },
 });
