@@ -21,6 +21,7 @@ export const metadata: Metadata = {
 };
 
 import { TRPCReactProvider } from "@/trpc/react";
+import { AnalyticsProvider } from "@/lib/analytics/posthog-provider";
 
 export default function RootLayout({
   children,
@@ -33,7 +34,9 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <TRPCReactProvider>{children}</TRPCReactProvider>
+        <AnalyticsProvider>
+          <TRPCReactProvider>{children}</TRPCReactProvider>
+        </AnalyticsProvider>
       </body>
     </html>
   );

@@ -1,5 +1,5 @@
 import Stripe from "stripe";
-import { type WorkspacePlan } from "@prisma/client";
+import { type WorkspacePlan, type MembershipInterval } from "@prisma/client";
 import { env } from "@/env";
 
 export const stripe = new Stripe(env.STRIPE_SECRET_KEY, {
@@ -51,4 +51,20 @@ export function computeApplicationFee(
   const percent = getPlatformFeePercent(plan);
   if (percent <= 0 || unitAmountCents <= 0) return 0;
   return Math.round((unitAmountCents * percent) / 100);
+}
+
+/** Map our `MembershipInterval` enum to a Stripe recurring interval. */
+export function stripeInterval(
+  interval: MembershipInterval
+): "day" | "week" | "month" | "year" {
+  switch (interval) {
+    case "DAY":
+      return "day";
+    case "WEEK":
+      return "week";
+    case "MONTH":
+      return "month";
+    case "YEAR":
+      return "year";
+  }
 }

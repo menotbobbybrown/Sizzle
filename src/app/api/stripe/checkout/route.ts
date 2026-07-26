@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { stripe, computeApplicationFee } from "@/lib/stripe";
+import {
+  stripe,
+  computeApplicationFee,
+  getPlatformFeePercent,
+  stripeInterval,
+} from "@/lib/stripe";
 import { env } from "@/env";
 import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
@@ -78,7 +83,7 @@ export async function POST(req: Request) {
 
     const product = await db.product.findUnique({
       where: { id: productId },
-      include: { workspace: true },
+      include: { workspace: true, membershipConfig: true },
     });
 
     if (!product || product.status !== "PUBLISHED") {
@@ -99,6 +104,72 @@ export async function POST(req: Request) {
 
     const session_auth = await auth();
     const userId = session_auth?.user?.id ?? "";
+
+    // Membership products bill recurringly via a Stripe subscription and must be
+    // tied to a signed-in account. Handle them before the one-time flow.
+    const isMembership =
+      product.type === "MEMBERSHIP" && !!product.membershipConfig?.interval;
+
+    if (isMembership) {
+      if (!userId) {
+        return fail("Please sign in to start a membership.", 401, wantsRedirect);
+      }
+      if (
+        !product.workspace.stripeAccountId ||
+        product.workspace.stripeAccountStatus !== "connected"
+      ) {
+        return fail(
+          "This creator cannot accept payments yet. Please try again later.",
+          400,
+          wantsRedirect
+        );
+      }
+
+      const feePercent = getPlatformFeePercent(product.workspace.plan);
+      const membershipMetadata: Record<string, string> = {
+        kind: "membership",
+        productId: product.id,
+        workspaceId: product.workspace.id,
+        userId,
+      };
+
+      const membershipSession = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        success_url: `${env.NEXT_PUBLIC_APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}&product=${product.slug}`,
+        cancel_url: `${env.NEXT_PUBLIC_APP_URL}/store/${product.workspace.handle}/p/${product.slug}?canceled=true`,
+        customer_email: session_auth?.user?.email ?? undefined,
+        line_items: [
+          {
+            price_data: {
+              currency: product.currency.toLowerCase(),
+              product_data: {
+                name: product.name,
+                images: product.imageUrl ? [product.imageUrl] : [],
+              },
+              unit_amount: Math.round(Number(product.price) * 100),
+              recurring: {
+                interval: stripeInterval(product.membershipConfig!.interval!),
+                interval_count: product.membershipConfig!.intervalCount,
+              },
+            },
+            quantity: 1,
+          },
+        ],
+        subscription_data: {
+          ...(feePercent > 0 ? { application_fee_percent: feePercent } : {}),
+          transfer_data: { destination: product.workspace.stripeAccountId },
+          metadata: membershipMetadata,
+        },
+        metadata: membershipMetadata,
+      });
+
+      if (!membershipSession.url) {
+        return fail("Failed to create checkout session", 500, wantsRedirect);
+      }
+      return wantsRedirect
+        ? NextResponse.redirect(membershipSession.url, 303)
+        : NextResponse.json({ url: membershipSession.url });
+    }
 
     // Build line items based on pricing type
     let unitAmount: number;
