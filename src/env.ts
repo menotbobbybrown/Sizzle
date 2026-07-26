@@ -142,5 +142,11 @@ export const env = createEnv({
     NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
     NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST,
   },
-  skipValidation: !!process.env.SKIP_ENV_VALIDATION,
+  // Skip validation during `next build` (page-data collection imports every
+  // route, which would otherwise require every secret at build time) and when
+  // SKIP_ENV_VALIDATION is set. Validation still runs at runtime (`next start`),
+  // so a real deploy fails fast at boot if a required var is missing.
+  skipValidation:
+    !!process.env.SKIP_ENV_VALIDATION ||
+    process.env.NEXT_PHASE === "phase-production-build",
 });
