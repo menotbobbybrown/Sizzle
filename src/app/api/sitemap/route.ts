@@ -13,7 +13,9 @@ function urlEntry(loc: string, lastmod?: Date): string {
 }
 
 export async function GET() {
-  const base = env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
+  // Fallback covers no-secrets builds (SKIP_ENV_VALIDATION drops zod defaults),
+  // where this route is prerendered and NEXT_PUBLIC_APP_URL may be undefined.
+  const base = (env.NEXT_PUBLIC_APP_URL || "http://localhost:3000").replace(/\/$/, "");
 
   const staticPaths = ["/", "/pricing", "/explore"];
   const entries: string[] = staticPaths.map((p) => urlEntry(`${base}${p}`));

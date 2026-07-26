@@ -2,10 +2,17 @@ import Stripe from "stripe";
 import { type WorkspacePlan, type MembershipInterval } from "@prisma/client";
 import { env } from "@/env";
 
-export const stripe = new Stripe(env.STRIPE_SECRET_KEY, {
-  apiVersion: "2025-01-27" as any,
-  typescript: true,
-});
+// The `|| placeholder` keeps the client from throwing at module load during a
+// build that runs with SKIP_ENV_VALIDATION (no secrets). Stripe only validates
+// the key when an API call is made, so at runtime the real, validated key is
+// always used — the placeholder is never reached when env validation is on.
+export const stripe = new Stripe(
+  env.STRIPE_SECRET_KEY || "sk_test_build_placeholder",
+  {
+    apiVersion: "2025-01-27" as any,
+    typescript: true,
+  }
+);
 
 export function stripeAmount(amount: number): number {
   return Math.round(amount * 100);
