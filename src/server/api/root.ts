@@ -2,6 +2,7 @@ import { authRouter } from "@/server/api/routers/auth";
 import { creatorRouter } from "@/server/api/routers/creator";
 import { storefrontRouter } from "@/server/api/routers/storefront";
 import { productRouter } from "@/server/api/routers/product";
+import { courseRouter } from "@/server/api/routers/course";
 import { moduleRouter } from "@/server/api/routers/module";
 import { lessonRouter } from "@/server/api/routers/lesson";
 import { checkoutRouter } from "@/server/api/routers/checkout";
@@ -39,6 +40,7 @@ export const appRouter = createTRPCRouter({
 
   // Products & courses
   product: productRouter,
+  course: courseRouter,
   module: moduleRouter,
   lesson: lessonRouter,
 

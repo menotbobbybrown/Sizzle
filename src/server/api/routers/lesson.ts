@@ -99,6 +99,37 @@ export const lessonRouter = createTRPCRouter({
       return { success: true };
     }),
 
+  reorder: creatorProcedure
+    .input(
+      z.object({
+        moduleId: z.string(),
+        lessonIds: z.array(z.string()),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertModuleInWorkspace(input.moduleId, ctx.workspace.id);
+
+      // Every id must belong to this module before we renumber.
+      const owned = await ctx.db.lesson.findMany({
+        where: { moduleId: input.moduleId, id: { in: input.lessonIds } },
+        select: { id: true },
+      });
+      if (owned.length !== input.lessonIds.length) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "One or more lessons do not belong to this module",
+        });
+      }
+
+      await ctx.db.$transaction(
+        input.lessonIds.map((id, index) =>
+          ctx.db.lesson.update({ where: { id }, data: { order: index } })
+        )
+      );
+
+      return { success: true };
+    }),
+
   // ── Student progress ────────────────────────────────────────────────
 
   markComplete: protectedProcedure

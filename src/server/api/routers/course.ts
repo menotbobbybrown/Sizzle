@@ -3,6 +3,73 @@ import { createTRPCRouter, creatorProcedure, protectedProcedure } from "@/server
 import { TRPCError } from "@trpc/server";
 
 export const courseRouter = createTRPCRouter({
+  /** List the workspace's course products with module/lesson counts. */
+  listForCreator: creatorProcedure.query(async ({ ctx }) => {
+    const products = await ctx.db.product.findMany({
+      where: { workspaceId: ctx.workspace.id, type: "COURSE" },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        status: true,
+        imageUrl: true,
+        course: {
+          select: {
+            modules: { select: { _count: { select: { lessons: true } } } },
+          },
+        },
+      },
+    });
+
+    return products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      slug: p.slug,
+      status: p.status,
+      imageUrl: p.imageUrl,
+      moduleCount: p.course?.modules.length ?? 0,
+      lessonCount:
+        p.course?.modules.reduce((sum, m) => sum + m._count.lessons, 0) ?? 0,
+    }));
+  }),
+
+  /**
+   * Load the full editable course tree for a course product the caller owns.
+   * Ensures the backing Course row exists (defensive) and returns modules and
+   * lessons in order.
+   */
+  getBuilder: creatorProcedure
+    .input(z.object({ productId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const product = await ctx.db.product.findFirst({
+        where: {
+          id: input.productId,
+          workspaceId: ctx.workspace.id,
+          type: "COURSE",
+        },
+        select: { id: true, name: true, slug: true },
+      });
+
+      if (!product) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Course not found" });
+      }
+
+      const course = await ctx.db.course.upsert({
+        where: { productId: product.id },
+        update: {},
+        create: { productId: product.id },
+        include: {
+          modules: {
+            orderBy: { order: "asc" },
+            include: { lessons: { orderBy: { order: "asc" } } },
+          },
+        },
+      });
+
+      return { product, course };
+    }),
+
   createModule: creatorProcedure
     .input(z.object({
       courseId: z.string(),
