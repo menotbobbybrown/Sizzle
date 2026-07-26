@@ -19,6 +19,9 @@ declare module "next-auth" {
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(db),
+  // Trust the host header behind Railway's proxy (otherwise Auth.js rejects
+  // requests with UntrustedHost). Safe here: Railway sets X-Forwarded-Host.
+  trustHost: true,
   providers: [
     GitHub({
       clientId: process.env.GITHUB_CLIENT_ID,

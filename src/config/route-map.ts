@@ -28,6 +28,7 @@ export const RESERVED_HANDLES = [
   "login",
   "register",
   "signup",
+  "explore",
   "api",
   "store",
   "app",
