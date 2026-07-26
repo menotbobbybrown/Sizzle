@@ -79,12 +79,20 @@ export const env = createEnv({
 
     // Encryption key for OAuth tokens (AES-256)
     ENCRYPTION_KEY: z.string().min(32).optional(),
+
+    // Observability
+    SENTRY_DSN: z.string().optional(),
   },
   client: {
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: z.string().min(1),
     NEXT_PUBLIC_PUSHER_KEY: z.string().optional(),
     NEXT_PUBLIC_PUSHER_CLUSTER: z.string().default("us2"),
     NEXT_PUBLIC_APP_URL: z.string().default("http://localhost:3000"),
+
+    // Observability (client)
+    NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
+    NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
+    NEXT_PUBLIC_POSTHOG_HOST: z.string().default("https://us.i.posthog.com"),
   },
   runtimeEnv: {
     DATABASE_URL: process.env.DATABASE_URL,
@@ -129,6 +137,10 @@ export const env = createEnv({
     YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY,
     REVALIDATE_SECRET: process.env.REVALIDATE_SECRET,
     ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
+    SENTRY_DSN: process.env.SENTRY_DSN,
+    NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
+    NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
+    NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST,
   },
   skipValidation: !!process.env.SKIP_ENV_VALIDATION,
 });

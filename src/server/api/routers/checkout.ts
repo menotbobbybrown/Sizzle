@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure, protectedProcedure } from "@/server/api/trpc";
-import { stripe, computeApplicationFee } from "@/lib/stripe";
+import {
+  stripe,
+  computeApplicationFee,
+  getPlatformFeePercent,
+  stripeInterval,
+} from "@/lib/stripe";
 import { env } from "@/env";
 import { TRPCError } from "@trpc/server";
 import { checkoutLimiter, checkRateLimit } from "@/lib/ratelimit";
@@ -31,7 +36,7 @@ export const checkoutRouter = createTRPCRouter({
 
       const product = await ctx.db.product.findUnique({
         where: { id: input.productId },
-        include: { workspace: true },
+        include: { workspace: true, membershipConfig: true },
       });
 
       if (!product || product.status !== "PUBLISHED") {
@@ -45,6 +50,18 @@ export const checkoutRouter = createTRPCRouter({
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: "This creator cannot accept payments yet.",
+        });
+      }
+
+      // Membership products bill on a recurring interval via a Stripe
+      // subscription; everything else is a one-time payment. A membership must
+      // be tied to a signed-in account so we can grant and later revoke access.
+      const isMembership =
+        product.type === "MEMBERSHIP" && !!product.membershipConfig?.interval;
+      if (isMembership && !ctx.session?.user?.id) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "Please sign in to start a membership.",
         });
       }
 
@@ -104,48 +121,87 @@ export const checkoutRouter = createTRPCRouter({
       const successUrl = `${env.NEXT_PUBLIC_APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}&product=${product.slug}`;
       const cancelUrl = `${env.NEXT_PUBLIC_APP_URL}/store/${product.workspace.handle}/p/${product.slug}?canceled=true`;
 
-      const session = await stripe.checkout.sessions.create({
-        line_items: [
-          {
-            price_data: {
-              currency: product.currency.toLowerCase(),
-              product_data: {
-                name: product.name,
-                images: product.imageUrl ? [product.imageUrl] : [],
+      const feePercent = getPlatformFeePercent(product.workspace.plan);
+      const destination = product.workspace.stripeAccountId;
+
+      const metadata: Record<string, string> = {
+        kind: isMembership ? "membership" : "one_time",
+        productId: product.id,
+        workspaceId: product.workspace.id,
+        userId: ctx.session?.user?.id ?? "",
+        discountCode: input.discountCode ?? "",
+        pricingType: product.pricingType,
+        customAmount: input.customAmount?.toString() ?? "",
+      };
+
+      const session = await stripe.checkout.sessions.create(
+        isMembership
+          ? {
+              mode: "subscription",
+              success_url: successUrl,
+              cancel_url: cancelUrl,
+              customer_email: ctx.session?.user?.email ?? undefined,
+              line_items: [
+                {
+                  price_data: {
+                    currency: product.currency.toLowerCase(),
+                    product_data: {
+                      name: product.name,
+                      images: product.imageUrl ? [product.imageUrl] : [],
+                    },
+                    // Membership uses the product's list price, not PWYW.
+                    unit_amount: Math.round(Number(product.price) * 100),
+                    recurring: {
+                      interval: stripeInterval(product.membershipConfig!.interval!),
+                      interval_count: product.membershipConfig!.intervalCount,
+                    },
+                  },
+                  quantity: 1,
+                },
+              ],
+              subscription_data: {
+                ...(feePercent > 0
+                  ? { application_fee_percent: feePercent }
+                  : {}),
+                transfer_data: { destination },
+                metadata,
               },
-              unit_amount: unitAmount,
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        success_url: successUrl,
-        cancel_url: cancelUrl,
-        customer_email: ctx.session?.user?.email ?? undefined,
-        payment_intent_data: {
-          // Platform fee (destination charge): the buyer pays `unitAmount`, the
-          // creator receives it minus our `application_fee_amount`.
-          ...(computeApplicationFee(unitAmount, product.workspace.plan) > 0
-            ? {
-                application_fee_amount: computeApplicationFee(
-                  unitAmount,
-                  product.workspace.plan
-                ),
-              }
-            : {}),
-          transfer_data: {
-            destination: product.workspace.stripeAccountId,
-          },
-        },
-        metadata: {
-          productId: product.id,
-          workspaceId: product.workspace.id,
-          userId: ctx.session?.user?.id ?? "",
-          discountCode: input.discountCode ?? "",
-          pricingType: product.pricingType,
-          customAmount: input.customAmount?.toString() ?? "",
-        },
-      });
+              metadata,
+            }
+          : {
+              mode: "payment",
+              success_url: successUrl,
+              cancel_url: cancelUrl,
+              customer_email: ctx.session?.user?.email ?? undefined,
+              line_items: [
+                {
+                  price_data: {
+                    currency: product.currency.toLowerCase(),
+                    product_data: {
+                      name: product.name,
+                      images: product.imageUrl ? [product.imageUrl] : [],
+                    },
+                    unit_amount: unitAmount,
+                  },
+                  quantity: 1,
+                },
+              ],
+              payment_intent_data: {
+                // Platform fee (destination charge): the buyer pays `unitAmount`,
+                // the creator receives it minus our `application_fee_amount`.
+                ...(computeApplicationFee(unitAmount, product.workspace.plan) > 0
+                  ? {
+                      application_fee_amount: computeApplicationFee(
+                        unitAmount,
+                        product.workspace.plan
+                      ),
+                    }
+                  : {}),
+                transfer_data: { destination },
+              },
+              metadata,
+            }
+      );
 
       return { url: session.url, sessionId: session.id };
     }),

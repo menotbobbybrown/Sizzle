@@ -9,7 +9,11 @@ vi.mock("@/env", () => ({
   },
 }));
 
-import { computeApplicationFee, getPlatformFeePercent } from "@/lib/stripe";
+import {
+  computeApplicationFee,
+  getPlatformFeePercent,
+  stripeInterval,
+} from "@/lib/stripe";
 import { generateToken, hashToken } from "@/lib/tokens";
 
 describe("Platform fee (destination-charge application fee)", () => {
@@ -42,6 +46,15 @@ describe("Platform fee (destination-charge application fee)", () => {
     expect(getPlatformFeePercent("PAST_DUE")).toBe(5);
     expect(getPlatformFeePercent("CANCELED")).toBe(5);
     expect(getPlatformFeePercent("TRIALING")).toBe(0);
+  });
+});
+
+describe("Membership billing interval", () => {
+  it("maps our interval enum to Stripe intervals", () => {
+    expect(stripeInterval("DAY")).toBe("day");
+    expect(stripeInterval("WEEK")).toBe("week");
+    expect(stripeInterval("MONTH")).toBe("month");
+    expect(stripeInterval("YEAR")).toBe("year");
   });
 });
 

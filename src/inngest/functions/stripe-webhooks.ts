@@ -2,8 +2,30 @@ import { inngest } from "@/lib/inngest";
 import { db } from "@/lib/db";
 import { stripe } from "@/lib/stripe";
 import { INNGEST_EVENTS } from "@/lib/inngest";
-import { WorkspacePlan } from "@prisma/client";
+import { WorkspacePlan, type SubscriptionStatus } from "@prisma/client";
 import { revalidateTag } from "@/lib/revalidate";
+
+/** Map a Stripe subscription status to our `SubscriptionStatus` enum. */
+function mapStripeSubStatus(status: string): SubscriptionStatus {
+  switch (status) {
+    case "active":
+      return "ACTIVE";
+    case "past_due":
+      return "PAST_DUE";
+    case "canceled":
+      return "CANCELED";
+    case "unpaid":
+      return "UNPAID";
+    case "incomplete":
+      return "INCOMPLETE";
+    case "incomplete_expired":
+      return "INCOMPLETE_EXPIRED";
+    case "trialing":
+      return "TRIALING";
+    default:
+      return "ACTIVE";
+  }
+}
 
 export const stripeWebhookHandler = inngest.createFunction(
   { id: "stripe-webhook-handler", name: "Stripe Webhook Handler", triggers: [{ event: "stripe/event" }] },
@@ -16,7 +38,16 @@ export const stripeWebhookHandler = inngest.createFunction(
       // Logic from original webhook handler
       if (type === "checkout.session.completed") {
         workspaceId = (session.metadata as any)?.workspaceId;
-        await handleCheckoutCompleted(session);
+        // A subscription-mode checkout tagged as a membership is a creator's
+        // recurring product, not a one-time sale or a platform-plan upgrade.
+        if (
+          session.mode === "subscription" &&
+          (session.metadata as any)?.kind === "membership"
+        ) {
+          await handleMembershipCheckout(session);
+        } else {
+          await handleCheckoutCompleted(session);
+        }
       } else if (type === "checkout.session.expired") {
         await handleCheckoutExpired(session);
       } else if (type === "charge.refunded") {
@@ -26,6 +57,8 @@ export const stripeWebhookHandler = inngest.createFunction(
         await handleSubscriptionUpdated(session);
       } else if (type === "customer.subscription.deleted") {
         await handleSubscriptionDeleted(session);
+      } else if (type === "invoice.payment_failed") {
+        await handleInvoicePaymentFailed(session);
       }
 
       // Mark event as processed in DB
@@ -211,6 +244,13 @@ async function handleChargeRefunded(session: any) {
 }
 
 async function handleSubscriptionUpdated(subscription: any) {
+  // Creator membership subscriptions and Sizzle platform-plan subscriptions
+  // both arrive here; the `kind` metadata tells them apart.
+  if (subscription.metadata?.kind === "membership") {
+    await syncMembershipSubscription(subscription);
+    return;
+  }
+
   const { workspaceId, planId } = subscription.metadata ?? {};
   if (!workspaceId) return;
 
@@ -231,8 +271,22 @@ async function handleSubscriptionUpdated(subscription: any) {
   });
 }
 
-async function handleSubscriptionDeleted(session: any) {
-  const subscriptionId = session.id;
+async function handleSubscriptionDeleted(subscription: any) {
+  const subscriptionId = subscription.id;
+
+  // If it's a creator membership, cancel it and stop access.
+  const membership = await db.memberSubscription.findUnique({
+    where: { stripeSubscriptionId: subscriptionId },
+  });
+  if (membership) {
+    await db.memberSubscription.update({
+      where: { id: membership.id },
+      data: { status: "CANCELED", cancelAtPeriodEnd: false },
+    });
+    return;
+  }
+
+  // Otherwise it's a platform-plan subscription → drop the workspace to FREE.
   await db.workspace.updateMany({
     where: { stripeSubscriptionId: subscriptionId },
     data: {
@@ -240,4 +294,137 @@ async function handleSubscriptionDeleted(session: any) {
       stripeSubscriptionId: null,
     },
   });
+}
+
+/** Initial creator-membership purchase (subscription-mode checkout). */
+async function handleMembershipCheckout(session: any) {
+  const { productId, workspaceId, userId } = session.metadata ?? {};
+  const stripeSubscriptionId = session.subscription as string | undefined;
+
+  // Memberships are tied to a known account (userId) and a Stripe subscription.
+  if (!productId || !workspaceId || !userId || !stripeSubscriptionId) return;
+
+  // Idempotency — Stripe delivers at least once.
+  const existing = await db.memberSubscription.findUnique({
+    where: { stripeSubscriptionId },
+  });
+  if (existing) return;
+
+  const product = await db.product.findUnique({ where: { id: productId } });
+  if (!product) return;
+
+  const sub: any = await stripe.subscriptions.retrieve(stripeSubscriptionId);
+  const currentPeriodStart = new Date(sub.current_period_start * 1000);
+  const currentPeriodEnd = new Date(sub.current_period_end * 1000);
+
+  const customerEmail = session.customer_details?.email;
+  const customerName = session.customer_details?.name;
+  const amount = (session.amount_total ?? 0) / 100;
+  const currency = (session.currency ?? "usd").toUpperCase();
+
+  // Record the initial charge as an order (idempotent on the session id).
+  const existingOrder = await db.order.findUnique({
+    where: { stripeSessionId: session.id },
+  });
+  const order =
+    existingOrder ??
+    (await db.order.create({
+      data: {
+        isGuest: false,
+        customerEmail,
+        customerName,
+        amount,
+        currency,
+        status: "PAID",
+        stripeSessionId: session.id,
+        workspace: { connect: { id: workspaceId } },
+        user: { connect: { id: userId } },
+        items: {
+          create: { productId, quantity: 1, unitPrice: product.price },
+        },
+      },
+    }));
+
+  await db.payment.create({
+    data: {
+      orderId: order.id,
+      stripeSessionId: session.id,
+      amount,
+      currency,
+      status: "SUCCEEDED",
+    },
+  });
+
+  const membership = await db.memberSubscription.create({
+    data: {
+      userId,
+      productId,
+      status: mapStripeSubStatus(sub.status),
+      stripeSubscriptionId,
+      currentPeriodStart,
+      currentPeriodEnd,
+    },
+  });
+
+  // Sales stats.
+  await db.product.update({
+    where: { id: productId },
+    data: {
+      totalSales: { increment: 1 },
+      totalRevenue: { increment: amount },
+    },
+  });
+  await db.workspace.update({
+    where: { id: workspaceId },
+    data: {
+      totalSales: { increment: 1 },
+      totalRevenue: { increment: amount },
+    },
+  });
+
+  // Send the membership welcome email (SUBSCRIPTION_CREATED flow), rather than
+  // the one-time receipt flow which builds a file-download link memberships
+  // don't have.
+  await inngest.send({
+    name: INNGEST_EVENTS.SUBSCRIPTION_CREATED,
+    data: { subscriptionId: membership.id, userId, workspaceId },
+  });
+}
+
+/** Keep a membership row in sync on renewal / status change. */
+async function syncMembershipSubscription(subscription: any) {
+  const membership = await db.memberSubscription.findUnique({
+    where: { stripeSubscriptionId: subscription.id },
+  });
+  if (!membership) return;
+
+  await db.memberSubscription.update({
+    where: { id: membership.id },
+    data: {
+      status: mapStripeSubStatus(subscription.status),
+      cancelAtPeriodEnd: !!subscription.cancel_at_period_end,
+      ...(subscription.current_period_start
+        ? { currentPeriodStart: new Date(subscription.current_period_start * 1000) }
+        : {}),
+      ...(subscription.current_period_end
+        ? { currentPeriodEnd: new Date(subscription.current_period_end * 1000) }
+        : {}),
+    },
+  });
+}
+
+/** A failed renewal invoice marks the membership past due (dunning). */
+async function handleInvoicePaymentFailed(invoice: any) {
+  const stripeSubscriptionId = invoice.subscription as string | undefined;
+  if (!stripeSubscriptionId) return;
+
+  const membership = await db.memberSubscription.findUnique({
+    where: { stripeSubscriptionId },
+  });
+  if (membership) {
+    await db.memberSubscription.update({
+      where: { id: membership.id },
+      data: { status: "PAST_DUE" },
+    });
+  }
 }

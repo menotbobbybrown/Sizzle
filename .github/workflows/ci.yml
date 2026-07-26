@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck · Test · Build
+    runs-on: ubuntu-latest
+    env:
+      # Placeholder values so env validation, the Prisma client, and the Stripe
+      # client can initialize during build. No real services are contacted.
+      SKIP_ENV_VALIDATION: "1"
+      DATABASE_URL: postgresql://user:pass@localhost:5432/sizzle
+      DIRECT_DATABASE_URL: postgresql://user:pass@localhost:5432/sizzle
+      NEXTAUTH_SECRET: ci-placeholder-secret-value
+      NEXTAUTH_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      APP_URL: http://localhost:3000
+      STRIPE_SECRET_KEY: sk_test_placeholder
+      STRIPE_WEBHOOK_SECRET: whsec_placeholder
+      STRIPE_CLIENT_ID: ca_placeholder
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: pk_test_placeholder
+      RESEND_API_KEY: re_placeholder
+      EMAIL_FROM: noreply@sizzle.so
+      R2_ACCOUNT_ID: placeholder
+      R2_ACCESS_KEY_ID: placeholder
+      R2_SECRET_ACCESS_KEY: placeholder
+      R2_BUCKET_NAME: sizzle
+      R2_PUBLIC_URL: https://pub-placeholder.r2.dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
