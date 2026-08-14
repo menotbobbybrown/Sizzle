@@ -13,3 +13,4 @@
 - [ ] Audit local environment configuration and remaining native dashboard placeholders without relying on a production deployment.
 - [x] Complete additional workspace data views that can run through the repository’s own NextAuth, Prisma, and tRPC stack.
 - [x] Prepare a safe local environment template and repeatable verification path for the native Sizzle application.
+- [x] Replace the workspace settings placeholder with a creator-scoped save form backed by the existing tenant procedures.
