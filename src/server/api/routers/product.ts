@@ -70,6 +70,7 @@ export const productRouter = createTRPCRouter({
       where: { workspaceId: ctx.workspace.id },
       orderBy: { updatedAt: "desc" },
       include: {
+        workspace: { select: { handle: true } },
         _count: { select: { orderItems: true, enrollments: true } },
       },
     });

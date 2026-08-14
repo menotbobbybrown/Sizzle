@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/lib/auth";
+import { MobileDashboardNav } from "@/components/dashboard/mobile-nav";
 
 /**
  * Authoritative auth gate for the entire creator dashboard. Placing it in the
@@ -20,7 +21,8 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="min-h-screen flex">
+    <div className="min-h-screen bg-zinc-50 md:flex">
+      <MobileDashboardNav />
       <aside className="w-64 border-r border-zinc-200 bg-white hidden md:flex flex-col">
         <div className="p-4 border-b border-zinc-100">
           <Link href="/dashboard" className="text-lg font-bold text-zinc-900">
@@ -41,7 +43,7 @@ export default async function DashboardLayout({
           <NavItem href="/dashboard/settings" label="Settings" icon="⚙️" />
         </nav>
       </aside>
-      <main className="flex-1 bg-zinc-50 min-h-screen">
+      <main className="min-w-0 flex-1 bg-zinc-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           {children}
         </div>
