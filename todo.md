@@ -10,3 +10,6 @@
 - [x] Include the active workspace handle in product management data so storefront links resolve to the real product route.
 - [x] Add a mobile-safe native dashboard navigation menu so every backend-connected dashboard workflow remains reachable on small screens.
 - [x] Accept Prisma Decimal values in live product-price formatting and ensure the associated helper test runs in the native test suite.
+- [ ] Audit local environment configuration and remaining native dashboard placeholders without relying on a production deployment.
+- [x] Complete additional workspace data views that can run through the repository’s own NextAuth, Prisma, and tRPC stack.
+- [x] Prepare a safe local environment template and repeatable verification path for the native Sizzle application.
